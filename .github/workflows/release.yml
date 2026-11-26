@@ -1,0 +1,58 @@
+name: Build & Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Phien ban, vd v1.0.1'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Ghi APP_VERSION theo tag
+        shell: bash
+        run: |
+          V="${{ steps.ver.outputs.tag }}"; V="${V#v}"
+          sed -i "s/^APP_VERSION = .*/APP_VERSION = \"$V\"/" nr_viewer.py
+          grep "^APP_VERSION" nr_viewer.py
+
+      - name: Cai thu vien
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: Build NRViewer.exe
+        run: >
+          pyinstaller --noconfirm --onefile --windowed --name NRViewer
+          --icon icon.ico --add-data "icon.ico;."
+          --hidden-import OpenGL.platform.win32 --collect-submodules OpenGL
+          nr_viewer.py
+
+      - name: Tao Release + dinh kem exe
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ${{ steps.ver.outputs.tag }}
+          files: dist/NRViewer.exe
+          generate_release_notes: true
