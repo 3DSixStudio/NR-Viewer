@@ -86,6 +86,19 @@ in vec3 vCol; out vec4 frag;
 void main(){ frag=vec4(vCol,1.0); }
 """
 
+BG_VS = """
+#version 330 core
+layout(location=0) in vec2 p;
+out float vy;
+void main(){ vy = p.y*0.5+0.5; gl_Position = vec4(p,0.0,1.0); }
+"""
+BG_FS = """
+#version 330 core
+in float vy; out vec4 frag;
+uniform vec3 uTop; uniform vec3 uBot;
+void main(){ frag = vec4(mix(uBot, uTop, vy), 1.0); }
+"""
+
 
 def _compile(vs, fs):
     def sh(src, kind):
@@ -222,6 +235,7 @@ class GLViewport(QOpenGLWidget):
     statsChanged = Signal(str)
     meshPicked = Signal(str, bool)   # ten mesh ("" = trong), them vao selection?
     frameRequested = Signal()        # phim F: zoom vao vat dang chon
+    backgroundChanged = Signal(str)  # Ctrl+B doi nen
     transformChanged = Signal(str, object, object, object)  # key, t, r, s (do keo gizmo)
     transformBegin = Signal(str, object, object, object)    # truoc khi keo (de undo)
     transformEnd = Signal(str, object, object, object)      # sau khi tha (de undo)
@@ -249,6 +263,14 @@ class GLViewport(QOpenGLWidget):
         self.alpha_cut = 0.1
         self.show_grid = True
         self.fov = 60.0
+        self.bg_list = [
+            ((0.22, 0.24, 0.29), (0.09, 0.09, 0.11), "Gradient"),
+            ((0.13, 0.13, 0.15), (0.13, 0.13, 0.15), "Xám đậm"),
+            ((0.36, 0.36, 0.39), (0.36, 0.36, 0.39), "Xám"),
+            ((0.70, 0.70, 0.72), (0.70, 0.70, 0.72), "Sáng"),
+            ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0), "Đen"),
+        ]
+        self.bg_index = 0
 
         self.yaw, self.pitch, self.dist = 35.0, -25.0, 10.0
         self.target = np.zeros(3, np.float32)
@@ -355,6 +377,16 @@ class GLViewport(QOpenGLWidget):
     def initializeGL(self):
         self.prog = _compile(MESH_VS, MESH_FS)
         self.lprog = _compile(LINE_VS, LINE_FS)
+        self.bgprog = _compile(BG_VS, BG_FS)
+        quad = np.array([-1, -1, 3, -1, -1, 3], np.float32)   # tam giac phu man hinh
+        self.bg_vao = GL.glGenVertexArrays(1)
+        self.bg_vbo = GL.glGenBuffers(1)
+        GL.glBindVertexArray(self.bg_vao)
+        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self.bg_vbo)
+        GL.glBufferData(GL.GL_ARRAY_BUFFER, quad.nbytes, quad, GL.GL_STATIC_DRAW)
+        GL.glEnableVertexAttribArray(0)
+        GL.glVertexAttribPointer(0, 2, GL.GL_FLOAT, False, 8, ctypes.c_void_p(0))
+        GL.glBindVertexArray(0)
         self.grid_vao, self.grid_n = None, 0
         self._build_grid(10.0)
         GL.glEnable(GL.GL_DEPTH_TEST)
@@ -500,11 +532,21 @@ class GLViewport(QOpenGLWidget):
 
     def _paint(self):
         self._flush()
-        GL.glClearColor(0.13, 0.13, 0.15, 1)
-        GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
         dpr = self.devicePixelRatioF()
         w, h = max(1, int(self.width() * dpr)), max(1, int(self.height() * dpr))
         GL.glViewport(0, 0, w, h)
+        top, bot, _ = self.bg_list[self.bg_index]
+        GL.glClearColor(bot[0], bot[1], bot[2], 1)
+        GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
+        # ve nen (gradient hoac mau dac) phu toan man hinh
+        GL.glDisable(GL.GL_DEPTH_TEST)
+        GL.glUseProgram(self.bgprog)
+        GL.glUniform3f(GL.glGetUniformLocation(self.bgprog, "uTop"), *top)
+        GL.glUniform3f(GL.glGetUniformLocation(self.bgprog, "uBot"), *bot)
+        GL.glBindVertexArray(self.bg_vao)
+        GL.glDrawArrays(GL.GL_TRIANGLES, 0, 3)
+        GL.glBindVertexArray(0)
+        GL.glEnable(GL.GL_DEPTH_TEST)
         view, proj = self._matrices(w, h)
 
         if self.show_grid:
@@ -598,9 +640,16 @@ class GLViewport(QOpenGLWidget):
         self.dist *= 0.88 if e.angleDelta().y() > 0 else 1 / 0.88
         self.update()
 
+    def cycle_background(self):
+        self.bg_index = (self.bg_index + 1) % len(self.bg_list)
+        self.backgroundChanged.emit(self.bg_list[self.bg_index][2])
+        self.update()
+
     def keyPressEvent(self, e):
         if e.key() == Qt.Key_F:
             self.frameRequested.emit()
+        elif e.key() == Qt.Key_B and (e.modifiers() & Qt.ControlModifier):
+            self.cycle_background()
         elif e.key() == Qt.Key_Q:
             self.set_gizmo_mode(None)
         elif e.key() == Qt.Key_W:
