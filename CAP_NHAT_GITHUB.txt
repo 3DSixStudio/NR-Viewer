@@ -1,0 +1,29 @@
+HUONG DAN BAT TU DONG CAP NHAT (GitHub)
+========================================
+
+1. TAO REPO
+   - Tao 1 repo tren GitHub, vi du:  3DSixStudio/NR-Viewer  (dat Public cho don gian).
+   - Mo file nr_viewer.py, sua dong:
+        GITHUB_REPO = "3DSixStudio/NR-Viewer"
+     thanh dung "tai-khoan/ten-repo" cua ban.
+   - Dong APP_VERSION = "1.0.0" la phien ban HIEN TAI cua ban.
+
+2. MOI LAN RA BAN MOI
+   a. Tang so phien ban trong nr_viewer.py, vd: APP_VERSION = "1.0.1"
+   b. Build lai:  build_exe.bat  -> ra dist\NRViewer.exe
+   c. Len GitHub -> repo -> muc "Releases" -> "Draft a new release".
+      - Tag:  v1.0.1   (PHAI khop voi APP_VERSION, co the them chu "v")
+      - Keo tha file dist\NRViewer.exe vao phan "Attach binaries" (asset).
+      - Bam "Publish release".
+
+3. NGUOI DUNG
+   - Bam nut "Kiem tra cap nhat" o goc tren phai.
+   - Neu tag moi > APP_VERSION dang chay -> nut doi thanh "Cap nhat vX.Y.Z".
+   - Bam vao -> tai NRViewer.exe moi -> app dong lai, tu thay file va mo lai.
+
+LUU Y
+   - App so sanh theo so: v1.0.10 > v1.0.9. Luon tang so khi ra ban moi.
+   - Ten file dinh kem nen la NRViewer.exe (app uu tien file .exe).
+   - Neu ban dang chay bang run.bat (ma nguon, chua build exe) thi nut Cap nhat
+     chi mo trang Release tren trinh duyet, khong tu thay file.
+   - Repo Private cung duoc nhung API se bi gioi han; nen de Public.

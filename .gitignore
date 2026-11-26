@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+build/
+dist/
+*.spec
+_nr_update.bat
+NRViewer_new.exe
+NRViewer_update.zip
+*.zip
