@@ -302,13 +302,14 @@ class UpdateDownloadWorker(QThread):
     progress = Signal(int, int)
     done = Signal(str, str)      # file path, error
 
-    def __init__(self, url, dest):
+    def __init__(self, url, dest, expected_size=0):
         super().__init__()
-        self.url, self.dest = url, dest
+        self.url, self.dest, self.expected = url, dest, expected_size
 
     def run(self):
         try:
-            UPD.download(self.url, self.dest, lambda d, t: self.progress.emit(d, t))
+            UPD.download(self.url, self.dest, lambda d, t: self.progress.emit(d, t),
+                         expected_size=self.expected)
             self.done.emit(self.dest, "")
         except Exception as e:  # noqa
             self.done.emit("", str(e))
@@ -638,7 +639,7 @@ class MainWindow(QMainWindow):
         self.btn_update.setEnabled(False)
         self.prog.setVisible(True)
         self.prog.setRange(0, 100)
-        self._dl = UpdateDownloadWorker(url, dest)
+        self._dl = UpdateDownloadWorker(url, dest, info.get("asset_size", 0))
         self._dl.progress.connect(lambda d, t: self.prog.setValue(int(d * 100 / t)) if t else None)
         self._dl.done.connect(self._on_download_done)
         self._dl.start()

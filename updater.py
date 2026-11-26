@@ -74,10 +74,10 @@ def check_latest(repo, timeout=15):
     }
 
 
-def download(url, dest, cb=None, timeout=60):
+def _download_once(url, dest, cb, timeout, expected):
     req = urllib.request.Request(url, headers={"User-Agent": "NR-Viewer-Updater"})
     with _opener().open(req, timeout=timeout) as r:
-        total = int(r.headers.get("Content-Length", 0) or 0)
+        total = int(r.headers.get("Content-Length", 0) or 0) or expected
         done = 0
         with open(dest, "wb") as f:
             while True:
@@ -88,7 +88,27 @@ def download(url, dest, cb=None, timeout=60):
                 done += len(chunk)
                 if cb:
                     cb(done, total)
-    return dest
+    size = os.path.getsize(dest)
+    want = expected or total
+    if want and size != want:
+        raise IOError(f"Tải chưa đủ: {size}/{want} byte")
+    return size
+
+
+def download(url, dest, cb=None, timeout=120, expected_size=0, retries=3):
+    """Tai file, kiem tra du dung luong; thieu thi tai lai (tranh exe bi dut)."""
+    last = None
+    for attempt in range(retries):
+        try:
+            _download_once(url, dest, cb, timeout, expected_size)
+            return dest
+        except Exception as e:  # noqa
+            last = e
+            try:
+                os.remove(dest)
+            except OSError:
+                pass
+    raise last if last else IOError("Tải thất bại")
 
 
 def is_frozen():
@@ -119,6 +139,7 @@ def apply_update_and_restart(new_file):
         "  ping 127.0.0.1 -n 2 >nul\r\n"
         "  goto retry\r\n"
         ")\r\n"
+        f'powershell -NoProfile -Command "try{{Unblock-File -LiteralPath \'{exe}\'}}catch{{}}" >nul 2>&1\r\n'
         f'start "" "{exe}"\r\n'
         'del "%~f0"\r\n'
     )
