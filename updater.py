@@ -44,6 +44,23 @@ def _opener():
     return urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
 
 
+def _pick_app_asset(assets):
+    """Chon file APP de cap nhat: NRViewer.exe (KHONG phai file Setup/installer)."""
+    exes = [a for a in assets if a.get("name", "").lower().endswith(".exe")]
+    app = [a for a in exes if "setup" not in a["name"].lower() and "install" not in a["name"].lower()]
+    if app:
+        for a in app:
+            if a["name"].lower() == "nrviewer.exe":
+                return a
+        return app[0]
+    if exes:
+        return exes[0]
+    zips = [a for a in assets if a.get("name", "").lower().endswith(".zip")]
+    if zips:
+        return zips[0]
+    return assets[0] if assets else None
+
+
 def check_latest(repo, timeout=15):
     """Tra ve dict {version, name, notes, asset_url, asset_name, page} cua ban moi nhat."""
     req = urllib.request.Request(API.format(repo=repo),
@@ -52,17 +69,7 @@ def check_latest(repo, timeout=15):
     with _opener().open(req, timeout=timeout) as r:
         data = json.loads(r.read().decode("utf-8"))
     assets = data.get("assets", [])
-    # uu tien file .exe, roi .zip, roi asset dau tien
-    pick = None
-    for want in (".exe", ".zip"):
-        for a in assets:
-            if a.get("name", "").lower().endswith(want):
-                pick = a
-                break
-        if pick:
-            break
-    if pick is None and assets:
-        pick = assets[0]
+    pick = _pick_app_asset(assets)
     return {
         "version": data.get("tag_name", "") or data.get("name", ""),
         "name": data.get("name", ""),

@@ -27,16 +27,17 @@ jobs:
         shell: bash
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "tag=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+            TAG="${{ github.event.inputs.version }}"
           else
-            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+            TAG="${GITHUB_REF_NAME}"
           fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "num=${TAG#v}" >> "$GITHUB_OUTPUT"
 
       - name: Ghi APP_VERSION theo tag
         shell: bash
         run: |
-          V="${{ steps.ver.outputs.tag }}"; V="${V#v}"
-          sed -i "s/^APP_VERSION = .*/APP_VERSION = \"$V\"/" nr_viewer.py
+          sed -i "s/^APP_VERSION = .*/APP_VERSION = \"${{ steps.ver.outputs.num }}\"/" nr_viewer.py
           grep "^APP_VERSION" nr_viewer.py
 
       - name: Cai thu vien
@@ -49,10 +50,18 @@ jobs:
           --hidden-import OpenGL.platform.win32 --collect-submodules OpenGL
           nr_viewer.py
 
-      - name: Tao Release + dinh kem exe
+      - name: Cai Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build file cai dat (Setup)
+        run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppVersion=${{ steps.ver.outputs.num }} installer.iss'
+
+      - name: Tao Release + dinh kem (app + setup)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.ver.outputs.tag }}
           name: ${{ steps.ver.outputs.tag }}
-          files: dist/NRViewer.exe
+          files: |
+            dist/NRViewer.exe
+            installer_out/NRViewer-Setup.exe
           generate_release_notes: true
