@@ -216,9 +216,10 @@ class LoadWorker(QThread):
     failed = Signal(int, str, str)
     duplicate = Signal(int, str, str)
 
-    def __init__(self, gen, jobs, scene, fov, aspect, flip_y, dedupe=True, clip_fns=None, xform=None):
+    def __init__(self, gen, jobs, scene, fov, aspect, flip_y, dedupe=True, clip_fns=None, xform=None, vc_index=0):
         super().__init__()
         self.xform = xform
+        self.vc_index = vc_index
         self.clip_fns = clip_fns or {}
         self.dedupe = dedupe
         self._seen = {}
@@ -232,7 +233,7 @@ class LoadWorker(QThread):
     def run(self):
         n = len(self.jobs)
         cursor = 0.0
-        for i, (path, tex, uv_label, color_label) in enumerate(self.jobs):
+        for i, (path, tex, uv_label) in enumerate(self.jobs):
             if self._stop:
                 return
             name = os.path.splitext(os.path.basename(path))[0]
@@ -240,7 +241,7 @@ class LoadWorker(QThread):
                 m = NR.NRMesh(path)
                 if self.scene:
                     cf = self.clip_fns.get(name)
-                    g = m.view_geometry(self.fov, self.aspect, uv_label, clip_fn=cf, with_color=True, color_label=color_label)
+                    g = m.view_geometry(self.fov, self.aspect, uv_label, clip_fn=cf, with_color=True, color_index=self.vc_index)
                     if g is None:
                         continue
                     pos, uv, tri, vcol = g
@@ -256,7 +257,7 @@ class LoadWorker(QThread):
                     uva = None
                     if uv_label and m.input is not None:
                         uva = m.input.find(lambda a: a.label == uv_label)
-                    g = m.local_geometry(uva, with_color=True, color_label=color_label)
+                    g = m.local_geometry(uva, with_color=True, color_index=self.vc_index)
                     if g is None:
                         continue
                     pos, uv, tri, vcol = g
@@ -328,6 +329,7 @@ class MainWindow(QMainWindow):
         self.tex_freq = Counter()
         self.ripinfo = {}
         self.gen = 0
+        self.vc_index = 1          # kenh vertex color chung (giong vc_N cua Blender)
         self.worker = None
         self._old_workers = []
         self._upd_worker = None
@@ -715,7 +717,8 @@ class MainWindow(QMainWindow):
                 QApplication.processEvents()
         self.prog.setVisible(False)
         for name, m in self.meta.items():
-            self.choice[name] = [self._default_tex(m), self._default_uv(m), self._default_color(m)]
+            self.choice[name] = [self._default_tex(m), self._default_uv(m)]
+        self._populate_vc()
 
         info = self.ripinfo
         txt = os.path.normpath(d)
@@ -861,10 +864,6 @@ class MainWindow(QMainWindow):
         c = m.uv_candidates()
         pa = m.position_attr()
         c = [a for a in c if pa is None or a.label != pa.label]
-        return c[0].label if c else None
-
-    def _default_color(self, m):
-        c = NR.mesh_color_attrs(m)
         return c[0].label if c else None
 
     def _is_2d(self, m):
@@ -1057,7 +1056,7 @@ class MainWindow(QMainWindow):
         self.view.frame_all(names or None)
 
     def _update_panel(self, names):
-        for w in (self.cmb_tex, self.cmb_uv, self.cmb_vc):
+        for w in (self.cmb_tex, self.cmb_uv):
             w.blockSignals(True)
             w.clear()
         if len(names) != 1:
@@ -1065,7 +1064,7 @@ class MainWindow(QMainWindow):
             self.cmb_uv.setEnabled(False)
             self.lbl_thumb.clear()
             self.txt_info.setPlainText(f"{len(names)} mesh được chọn" if names else "")
-            for w in (self.cmb_tex, self.cmb_uv, self.cmb_vc):
+            for w in (self.cmb_tex, self.cmb_uv):
                 w.blockSignals(False)
             self.view.set_gizmo_target(None)      # gizmo chi hien khi chon dung 1 vat
             return
@@ -1083,15 +1082,7 @@ class MainWindow(QMainWindow):
         k = self.cmb_uv.findData(ch[1])
         if k >= 0:
             self.cmb_uv.setCurrentIndex(k)
-        cattrs = NR.mesh_color_attrs(m)
-        if not cattrs:
-            self.cmb_vc.addItem("(không có)", None)
-        for a in cattrs:
-            self.cmb_vc.addItem(f"{a.label}  (uint8x{a.comps})", a.label)
-        kv = self.cmb_vc.findData(ch[2] if len(ch) > 2 else None)
-        if kv >= 0:
-            self.cmb_vc.setCurrentIndex(kv)
-        for w in (self.cmb_tex, self.cmb_uv, self.cmb_vc):
+        for w in (self.cmb_tex, self.cmb_uv):
             w.blockSignals(False)
         self._show_thumb(m, ch[0])
         self.txt_info.setPlainText(self._info_text(m))
@@ -1139,14 +1130,23 @@ class MainWindow(QMainWindow):
         self._show_thumb(self.meta[names[0]], ti)
         self._sel_timer.start()
 
+    def _populate_vc(self):
+        """O chon kenh mau chung cho ca canh: vc_0..vc_N (giong Blender)."""
+        self.cmb_vc.blockSignals(True)
+        self.cmb_vc.clear()
+        nmax = NR.max_color_channels(list(self.meta.values()))
+        if nmax == 0:
+            self.cmb_vc.addItem("(không có)", 0)
+        for i in range(nmax):
+            self.cmb_vc.addItem(f"vc_{i}", i)
+        self.vc_index = min(self.vc_index, max(0, nmax - 1))
+        self.cmb_vc.setCurrentIndex(self.vc_index if nmax else 0)
+        self.cmb_vc.blockSignals(False)
+
     def _on_vc_choice(self, idx):
-        names = self.selected_names()
-        if len(names) != 1:
-            return
-        if len(self.choice[names[0]]) < 3:
-            self.choice[names[0]].append(None)
-        self.choice[names[0]][2] = self.cmb_vc.itemData(idx)
-        self._sel_timer.start()
+        self.vc_index = self.cmb_vc.itemData(idx) or 0
+        if self._loaded_keys:
+            self._reload_view(self._loaded_keys)
 
     def _on_uv_choice(self, idx):
         names = self.selected_names()
@@ -1183,13 +1183,12 @@ class MainWindow(QMainWindow):
         if not names:
             return
         scene = self.cmb_space.currentIndex() == 1
-        jobs = [(self.meta[n].path, self._tex_path(n), self.choice[n][1],
-                 self.choice[n][2] if len(self.choice[n]) > 2 else None) for n in names]
+        jobs = [(self.meta[n].path, self._tex_path(n), self.choice[n][1]) for n in names]
         if scene and self.sky_names:
             self._apply_sky(self.sky_names, reload=False)
         self.worker = LoadWorker(self.gen, jobs, scene, self.sp_fov.value(), self.sp_aspect.value(), self.cb_flipy.isChecked(),
                                  self.cb_dedupe.isChecked(),
-                                 None, self.sky_M if scene else None)
+                                 None, self.sky_M if scene else None, self.vc_index)
         self.worker.duplicate.connect(self._on_dupe)
         self.worker.meshReady.connect(self._on_mesh_ready)
         self.worker.progress.connect(self._on_progress)
@@ -1315,7 +1314,7 @@ class MainWindow(QMainWindow):
             try:
                 m = NR.NRMesh(self.meta[n].path)
                 uva = m.input.find(lambda a: a.label == self.choice[n][1]) if m.input else None
-                g = m.local_geometry(uva, with_color=True, color_label=(self.choice[n][2] if len(self.choice[n]) > 2 else None))
+                g = m.local_geometry(uva, with_color=True, color_index=self.vc_index)
                 if g is None:
                     continue
                 pos, uv, tri, col = g
@@ -1345,7 +1344,7 @@ class MainWindow(QMainWindow):
             try:
                 m = NR.NRMesh(self.meta[n].path)
                 g = m.view_geometry(self.sp_fov.value(), self.sp_aspect.value(), self.choice[n][1], with_color=True,
-                                    color_label=(self.choice[n][2] if len(self.choice[n]) > 2 else None))
+                                    color_index=self.vc_index)
                 if g is None:
                     continue
                 pos, uv, tri, col = g

@@ -207,7 +207,7 @@ class NRMesh:
         return p if os.path.isfile(p) else None
 
     # ---------------------------------------------------------------- export
-    def local_geometry(self, uv_attr=None, with_color=False, color_label=None):
+    def local_geometry(self, uv_attr=None, with_color=False, color_label=None, color_index=None):
         """(positions Nx3, uvs Nx2|None, indices Mx3[, colors Nx3]) trong khong gian object."""
         b = self.input
         pa = self.position_attr()
@@ -225,14 +225,14 @@ class NRMesh:
             uvs = b.read_attr(uv_attr)
         idx = _clean_indices(b.indices, len(pos))
         if with_color:
-            cols = mesh_vertex_colors(self, color_label)
+            cols = mesh_vertex_colors(self, color_index=color_index, attr_label=color_label)
             if cols is not None:
                 cols = cols[:len(pos)]
             return pos, uvs, idx, cols
         return pos, uvs, idx
 
     def view_geometry(self, fov_deg=60.0, aspect=16 / 9, uv_attr_label=None, clip_fn=None,
-                      with_color=False, color_label=None):
+                      with_color=False, color_label=None, color_index=None):
         """Dung lai toa do camera tu SV_Position cua cac output (moi instance)."""
         outs = self.outputs
         if not outs:
@@ -245,11 +245,7 @@ class NRMesh:
             in_uv = self.input.find(lambda a: a.label == uv_attr_label)
         in_col = None
         if with_color:
-            cands = _color_attrs(self.input)
-            if color_label:
-                in_col = next((x for x in cands if x.label == color_label), None)
-            if in_col is None and cands:
-                in_col = cands[0]
+            in_col = _pick_color_attr(self.input, color_index, color_label)
         for ob in outs:
             if ob.raw is None or ob.indices is None:
                 continue
@@ -589,8 +585,12 @@ def mesh_color_attrs(mesh):
     return _color_attrs(mesh.input)
 
 
-def mesh_vertex_colors(mesh, attr_label=None):
-    """(N,3) float 0..1 hoac None. Mac dinh lay kenh color dau tien."""
+def max_color_channels(meshes):
+    return max((len(_color_attrs(m.input)) for m in meshes), default=0)
+
+
+def mesh_vertex_colors(mesh, color_index=None, attr_label=None):
+    """(N,3) float 0..1 hoac None. color_index = vc_N kieu Blender (clamp theo so kenh)."""
     b = mesh.input
     cands = _color_attrs(b)
     if not cands:
@@ -598,10 +598,25 @@ def mesh_vertex_colors(mesh, attr_label=None):
     a = None
     if attr_label:
         a = next((x for x in cands if x.label == attr_label), None)
+    if a is None and color_index is not None:
+        a = cands[min(max(0, int(color_index)), len(cands) - 1)]
     if a is None:
         a = cands[0]
     col = b.read_attr(a)
     return col[:, :3] if col is not None else None
+
+
+def _pick_color_attr(buf, color_index=None, color_label=None):
+    cands = _color_attrs(buf)
+    if not cands:
+        return None
+    if color_label:
+        a = next((x for x in cands if x.label == color_label), None)
+        if a is not None:
+            return a
+    if color_index is not None:
+        return cands[min(max(0, int(color_index)), len(cands) - 1)]
+    return cands[0]
 
 
 def split_faces_by_color(colors01, tri):
