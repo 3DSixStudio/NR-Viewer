@@ -70,8 +70,11 @@ void main(){
         float k = mod(c.x+c.y,2.0);
         base = mix(vec3(0.9,0.45,0.15), vec3(0.95), k);
     } else if(uMode==4){
-        base = vCol;
-        shade = 0.55 + 0.45*lam;
+        // giong "Color Attribute -> Base Color" cua Blender: phang, sang;
+        // chi pha mot chut sang/toi theo huong mat de thay khoi
+        vec3 c = vCol * (0.82 + 0.18*lam);
+        frag = vec4(c, 1.0);
+        return;
     }
     vec3 col = base*shade;
     if(uSel==1) col = mix(col, vec3(1.0,0.55,0.1), 0.5);
