@@ -711,19 +711,19 @@ class MainWindow(QMainWindow):
         for i, f in enumerate(files):
             try:
                 m0 = NR.NRMesh(os.path.join(d, f), header_only=True)
-                self.tex_freq.update(t for _, t in m0.textures)
-                # 1 file co the chua nhieu draw -> moi draw 1 mesh, ten kieu Blender
+                base = m0.name
+                # Y het io_import_nr: MOI GEOM (draw) la 1 object, ten = ten file;
+                # trung ten thi them .001, .002... (so trong nho nhat, nhu Blender)
                 for k in range(m0.num_draws):
                     m = m0 if k == 0 else NR.NRMesh(os.path.join(d, f), header_only=True, draw_sel=k)
                     m.draw_sel = k
-                    nm = m0.name if k == 0 else f"{m0.name}.{k:03d}"
-                    while nm in self.meta:              # trung ten giua cac file -> .001.. nhu Blender
-                        k2 = 1
-                        while f"{m0.name}.{k2:03d}" in self.meta:
-                            k2 += 1
-                        nm = f"{m0.name}.{k2:03d}"
+                    nm, n = base, 0
+                    while nm in self.meta:
+                        n += 1
+                        nm = f"{base}.{n:03d}"
                     m.name = nm
                     self.meta[nm] = m
+                    self.tex_freq.update(t for _, t in m.textures)
             except Exception as e:  # noqa
                 print("Loi doc", f, e)
             if i % 50 == 0:
@@ -1135,16 +1135,16 @@ class MainWindow(QMainWindow):
 
     def _info_text(self, m):
         L = [f"{m.name}   draw #{m.draw_index}   instances: {m.instances}", ""]
-        fmtname = {0: "f32", 3: "u8n", 5: "f16"}
-        for bid in sorted(m.buffers):
+        fmtname = {0: "f32", 1: "u32", 2: "u16", 3: "u8", 4: "s32", 5: "s16", 6: "s8"}
+        pre, vs = m.draws[m.active] if m.draws else (None, None)
+        for bid, lab in ((pre, "PreVs (toạ độ gốc)"), (vs, "Vs / PostVs (màu, dựng cảnh)")):
+            if bid is None:
+                continue
             b = m.buffers[bid]
-            L.append(f"[{'INPUT (VS in)' if bid == 0 else 'OUTPUT #%d (VS out)' % bid}]")
+            L.append(f"[{lab}]")
             L.append(f"  verts {b.vcount:,}  stride {b.stride}  indices {b.index_count:,}")
             for a in b.attrs:
                 L.append(f"   {a.label:<13} {fmtname.get(a.fmt, a.fmt)}x{a.comps}  @{a.offset}")
-            if bid >= 2:
-                L.append("  …")
-                break
         L.append("")
         L.append("Textures:")
         for i, (_, t) in enumerate(m.textures):

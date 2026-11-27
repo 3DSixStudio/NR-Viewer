@@ -91,56 +91,35 @@ def _cstr(b, p):
     return b[p:e].decode("latin1"), e + 1
 
 
+TOPO_TRI, TOPO_POINT, TOPO_LINE = 1, 2, 3      # nrfile.PrimitiveTopology
+STAGE_PREVS = 1                                  # nrfile.ShaderStage.PreVs
+
+
 class NRMesh:
+    """Doc file .nr Y HET io_import_nr (nrfile.py + nrblendimp._importMeshImpl).
+
+    - Moi chunk co 'idx' = so thu tu RIENG theo tung loai tag (VATR#0, VATR#1...).
+    - Moi GEOM liet ke chinh xac cac chunk no dung qua cap (tag, idx).
+    - Moi GEOM la 1 mesh. Blender (che do PostVS) tao 1 object cho MOI GEOM
+      khong phai PreVs, dat ten = ten file (trung thi Blender tu them .001...).
+    - De co toa do object-space, moi mesh Vs duoc ghep voi GEOM PreVs cung drawId.
+    """
+
     def __init__(self, path, header_only=False, draw_sel=None):
         self.path = path
         self.name = os.path.splitext(os.path.basename(path))[0]
-        self.textures = []        # [(slot, filename)]
         self.shaders = []
-        self.buffers = {}         # id -> NRBuffer
+        self.buffers = {}         # geom index -> NRBuffer (da gom dung chunk cua GEOM do)
+        self.geoms = []           # list dict thong tin GEOM
         self.draw_index = -1
         self.instances = 1
-        self._geoms = []          # [(cid, stage, draw_id, inst)]
-        self.draw_sel = draw_sel  # None/0 = draw dau; k = chon draw thu k trong file
+        self.draw_sel = draw_sel  # chon mesh thu k trong file
+        self._ch = {}             # tag -> [du lieu chunk theo idx]
         self._parse(header_only)
+        self._build_geoms()
         self._build_draws()
 
-    def _build_draws(self):
-        """Mot file .nr co the chua NHIEU draw (nhieu GEOM). Moi draw = 1 mesh
-        hien thi: ghep GEOM PreVs (stage=1) voi GEOM Vs (stage=2) cung drawId.
-        self.draws = [(prevs_cid, vs_cid)], theo thu tu xuat hien."""
-        by_draw = {}
-        order = []
-        for cid, stage, did, inst in self._geoms:
-            if did not in by_draw:
-                by_draw[did] = {"pre": None, "vs": None}
-                order.append(did)
-            if stage == 1:
-                by_draw[did]["pre"] = cid
-            elif stage == 2:
-                by_draw[did]["vs"] = cid
-        draws = []
-        for did in order:
-            d = by_draw[did]
-            if d["pre"] is not None:
-                draws.append((d["pre"], d["vs"]))
-        if not draws:
-            # Khong doc duoc GEOM -> giu hanh vi cu: buffer 0 = PreVs, 1 = Vs
-            vs = 1 if 1 in self.buffers else None
-            draws = [(0 if 0 in self.buffers else min(self.buffers, default=0), vs)]
-        self.draws = draws
-        self.active = 0 if self.draw_sel is None else max(0, min(self.draw_sel, len(draws) - 1))
-        pre = draws[self.active][0]
-        for cid, stage, did, inst in self._geoms:
-            if cid == pre:
-                self.draw_index, self.instances = did, inst
-                break
-
-    @property
-    def num_draws(self):
-        return len(self.draws)
-
-    # ------------------------------------------------------------------ parse
+    # ------------------------------------------------------------ doc chunk
     def _parse(self, header_only):
         with open(self.path, "rb") as f:
             head = f.read(16)
@@ -156,112 +135,219 @@ class NRMesh:
                 if size < 12 or p + size > n:
                     break
                 tag = hdr[4:8].decode("latin1")
-                cid, = struct.unpack_from("<I", hdr, 8)
                 big = tag in ("VERT", "INDX")
                 b = f.read(8 if (big and header_only) else size - 12)
-                self._chunk(tag, cid, b, header_only)
+                self._ch.setdefault(tag, []).append(self._read_chunk(tag, b, header_only))
                 p += size
 
-    def _chunk(self, tag, cid, b, header_only):
-        buf = self.buffers.setdefault(cid, NRBuffer()) if tag in ("VATR", "INDX", "VERT") else None
+    def _read_chunk(self, tag, b, header_only):
         if tag == "TXTR":
+            out = []
             cnt, = struct.unpack_from("<I", b, 0)
             q = 4
             for _ in range(cnt):
                 slot, _unk = struct.unpack_from("<2I", b, q)
                 q += 8
                 s, q = _cstr(b, q)
-                self.textures.append((slot, s))
-        elif tag == "SHD1":
+                out.append((slot, s))
+            return out
+        if tag == "SHD1":
             cnt, = struct.unpack_from("<I", b, 0)
             q = 4
             for _ in range(cnt):
                 s, q = _cstr(b, q)
                 self.shaders.append(s)
-        elif tag == "VATR":
+            return None
+        if tag == "VATR":
+            out = []
             cnt, = struct.unpack_from("<I", b, 0)
             q = 4
             for _ in range(cnt):
                 s, q = _cstr(b, q)
                 idx, fmt, off, comps = struct.unpack_from("<4I", b, q)
                 q += 16
-                buf.attrs.append(NRAttr(s, idx, fmt, off, comps))
-        elif tag == "INDX":
-            cnt, fmt = struct.unpack_from("<2I", b, 0)
-            buf.index_count = cnt
+                out.append(NRAttr(s, idx, fmt, off, comps))
+            return out
+        if tag == "INDX":
+            cnt, topo = struct.unpack_from("<2I", b, 0)     # INDX: count, topology; index LUON uint32
+            ind = None
             if not header_only:
-                dt = np.uint32 if fmt == 1 else np.uint16
-                buf.indices = np.frombuffer(b, dtype=dt, count=cnt, offset=8).astype(np.uint32)
-        elif tag == "VERT":
+                ind = np.frombuffer(b, dtype=np.uint32, count=cnt, offset=8).copy()
+            return (cnt, topo, ind)
+        if tag == "VERT":
             cnt, stride = struct.unpack_from("<2I", b, 0)
-            buf.vcount, buf.stride = cnt, stride
-            if not header_only:
-                buf.raw = b[8:8 + cnt * stride]
-        elif tag == "GEOM":
-            flags, nref, draw, inst = struct.unpack_from("<4I", b, 0)
-            stage = (flags & 0x1C) >> 2               # PreVs=1, Vs=2, DsGs=3
-            self._geoms.append((cid, stage, draw, max(1, inst)))
-            if self.draw_index < 0:
-                self.draw_index, self.instances = draw, max(1, inst)
+            raw = None if header_only else b[8:8 + cnt * stride]
+            return (cnt, stride, raw)
+        if tag == "GEOM":
+            flags, nref, draw, inst, rip, g0, g1, frame = struct.unpack_from("<8I", b, 0)
+            refs = [struct.unpack_from("<2I", b, 32 + 8 * i) for i in range(nref)]
+            refs = [(struct.pack("<I", t).decode("latin1"), i) for t, i in refs]
+            return {"flags": flags, "topo": flags & 3, "stage": (flags & 0x1C) >> 2,
+                    "draw": draw, "inst": max(1, inst), "refs": refs,
+                    "group0": g0, "group1": g1, "frame": frame}
+        return None
+
+    def _ref(self, g, tag):
+        """Chunk dau tien loai 'tag' ma GEOM g tham chieu (nhu Geometry.__getChunk / getX(0))."""
+        for t, i in g["refs"]:
+            if t == tag:
+                arr = self._ch.get(tag) or []
+                return arr[i] if i < len(arr) else None
+        return None
+
+    def _build_geoms(self):
+        for gi, g in enumerate(self._ch.get("GEOM", [])):
+            buf = NRBuffer()
+            va = self._ref(g, "VATR")
+            if va:
+                buf.attrs = list(va)
+            vt = self._ref(g, "VERT")
+            if vt:
+                buf.vcount, buf.stride, buf.raw = vt
+            ix = self._ref(g, "INDX")
+            if ix:
+                cnt, _topo, ind = ix
+                if g["topo"] == TOPO_LINE:              # LineList -> tam giac suy bien (a,b,b) de van co mat
+                    buf.index_count = (cnt // 2) * 3
+                    if ind is not None:
+                        e = ind[:(len(ind) // 2) * 2].reshape(-1, 2)
+                        buf.indices = np.stack([e[:, 0], e[:, 1], e[:, 1]], 1).reshape(-1)
+                elif g["topo"] == TOPO_TRI:
+                    buf.index_count = cnt
+                    buf.indices = ind
+            g["textures"] = list(self._ref(g, "TXTR") or [])
+            self.buffers[gi] = buf
+            self.geoms.append(g)
+
+    def _valid_like_blender(self, gi, postvs):
+        """Cac dieu kien 'continue' trong _importMeshImpl."""
+        g, b = self.geoms[gi], self.buffers[gi]
+        if not b.attrs or not b.vcount:
+            return False
+        if postvs and b.attrs[0].comps != 4:
+            return False
+        if g["topo"] == TOPO_TRI:
+            return self._ref(g, "INDX") is not None and b.vcount >= 3
+        if g["topo"] == TOPO_LINE:
+            return self._ref(g, "INDX") is not None and b.vcount >= 2
+        return g["topo"] == TOPO_POINT
+
+    def _build_draws(self):
+        """Danh sach mesh hien thi = moi GEOM khong phai PreVs (y het Blender PostVS),
+        ghep voi GEOM PreVs cung drawId de lay toa do object-space.
+        GEOM PreVs khong co cap Vs nao thi cung giu lai (khong bo mesh nao)."""
+        pre_by_draw, pre_by_vatr = {}, {}
+        for gi, g in enumerate(self.geoms):
+            if g["stage"] == STAGE_PREVS and self._valid_like_blender(gi, False):
+                pre_by_draw.setdefault(g["draw"], []).append(gi)
+                v = [i for t, i in g["refs"] if t == "VATR"]
+                if v:
+                    pre_by_vatr.setdefault(v[0], gi)
+        draws, used_pre = [], set()
+        for gi, g in enumerate(self.geoms):
+            if g["stage"] == STAGE_PREVS or not self._valid_like_blender(gi, True):
+                continue
+            # Ghep chinh xac: GEOM Vs tu tham chieu VATR cua PreVs o vi tri thu 2
+            v = [i for t, i in g["refs"] if t == "VATR"]
+            pre = pre_by_vatr.get(v[1]) if len(v) > 1 else None
+            if pre is None:                       # du phong: cung drawId, uu tien cung so dinh
+                cands = pre_by_draw.get(g["draw"], [])
+                vc = self.buffers[gi].vcount
+                pre = next((c for c in cands if self.buffers[c].vcount == vc), cands[0] if cands else None)
+            if pre is not None:
+                used_pre.add(pre)
+            draws.append((pre, gi))
+        vs_draws = {self.geoms[v]["draw"] for _p, v in draws}
+        for did, lst in pre_by_draw.items():
+            if did in vs_draws:
+                continue                          # draw nay da co mesh Vs (Blender chi tao 1)
+            for p in lst:
+                draws.append((p, None))           # PreVs khong co Vs: van giu, khong bo mesh
+        self.draws = draws
+        self.active = 0 if not draws or self.draw_sel is None else max(0, min(self.draw_sel, len(draws) - 1))
+        if draws:
+            pre, vs = draws[self.active]
+            g = self.geoms[vs if vs is not None else pre]
+            self.draw_index, self.instances = g["draw"], g["inst"]
+            self.geom = g
+        else:
+            self.geom = None
+
+    @property
+    def num_draws(self):
+        return len(self.draws)
+
+    @property
+    def topology(self):
+        return self.geom["topo"] if self.geom else TOPO_TRI
+
+    @property
+    def textures(self):
+        """Texture cua rieng mesh nay (TXTR ma GEOM tham chieu)."""
+        if not self.draws:
+            return []
+        pre, vs = self.draws[self.active]
+        for gi in (vs, pre):
+            if gi is not None and self.geoms[gi]["textures"]:
+                return self.geoms[gi]["textures"]
+        return []
 
     # --------------------------------------------------------------- helpers
     @property
     def _active_draw(self):
         if not self.draws:
-            return (0, 1 if 1 in self.buffers else None)
+            return (None, None)
         return self.draws[self.active]
 
     @property
     def input(self):
-        """Buffer PreVs cua draw dang chon (vi tri object-space)."""
+        """Buffer PreVs (toa do object-space) cua mesh dang chon."""
         pre, _vs = self._active_draw
-        return self.buffers.get(pre)
+        return self.buffers.get(pre) if pre is not None else None
 
     @property
     def outputs(self):
-        """Buffer Vs (PostVs) cua rieng draw dang chon - de dung canh tu SV_Position."""
+        """Buffer Vs (PostVs) cua mesh dang chon - dung canh tu SV_Position."""
         _pre, vs = self._active_draw
-        if vs is not None and vs in self.buffers:
-            return [self.buffers[vs]]
-        return [self.buffers[k] for k in sorted(self.buffers) if k > 0]
+        return [self.buffers[vs]] if vs is not None else []
 
     @property
     def color_buffer(self):
-        """Buffer chua MAU per-vertex = PostVs (Vs stage) cua draw dang chon,
-        KHONG phai PreVs. Map 1:1 theo chi so dinh voi input."""
+        """Mau per-vertex lay tu buffer Vs (dung nhu Blender PostVS), khong co thi PreVs."""
         _pre, vs = self._active_draw
-        if vs is not None and vs in self.buffers:
-            ob = self.buffers[vs]
-            if ob.attrs and ob.vcount:
-                return ob
-        ib = self.input
-        base = ib.vcount if ib else 0
-        for ob in self.outputs:
-            if ob.attrs and ob.vcount and (base == 0 or ob.vcount == base):
-                return ob
-        return ib
+        if vs is not None and self.buffers[vs].attrs:
+            return self.buffers[vs]
+        return self.input
+
+    @property
+    def _any_buf(self):
+        b = self.input
+        if b is None and self.outputs:
+            b = self.outputs[0]
+        return b
 
     def vert_count(self):
-        b = self.input
+        b = self._any_buf
         return b.vcount if b else 0
 
     def tri_count(self):
-        b = self.input
+        b = self._any_buf
         return (b.index_count // 3) if b else 0
 
     def is_screen_quad(self):
-        b = self.input
+        b = self._any_buf
         return b is not None and b.vcount <= 4
 
     def position_attr(self):
         b = self.input
         if not b:
             return None
+        # Y het nrtools.createPreVsAuto: POSITION -> ATTRIBUTE 3 kenh -> attr[0]
         a = b.find(lambda a: a.name.upper() == "POSITION")
         if a is None:
-            a = b.find(lambda a: a.fmt == 0 and a.comps >= 3)
-        if a is None:
-            a = b.find(lambda a: a.fmt == 0 and a.comps >= 2)
+            a = b.find(lambda a: a.name.upper() == "ATTRIBUTE" and a.comps == 3)
+        if a is None and b.attrs:
+            a = b.attrs[0]
         return a
 
     def uv_candidates(self):
@@ -281,8 +367,14 @@ class NRMesh:
     def local_geometry(self, uv_attr=None, with_color=False, color_label=None, color_index=None):
         """(positions Nx3, uvs Nx2|None, indices Mx3[, colors Nx3]) trong khong gian object."""
         b = self.input
+        if b is None:
+            # Mesh chi co Vs (khong co PreVs): dung lai toa do tu SV_Position
+            # nhu Blender (createPos3FromPostVsAsList) roi tra ve.
+            return self.view_geometry(60.0, 16 / 9, with_color=with_color,
+                                      color_label=color_label, color_index=color_index) \
+                if with_color else self.view_geometry(60.0, 16 / 9)
         pa = self.position_attr()
-        if b is None or pa is None or b.indices is None:
+        if pa is None or b.indices is None:
             return None
         pos = b.read_attr(pa)
         if pos.shape[1] == 2:
