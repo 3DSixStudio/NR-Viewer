@@ -514,14 +514,16 @@ class MainWindow(QMainWindow):
         sec_scene.add(_btn("🌐 Dựng cả frame (mesh đang lọc)", self.build_whole_frame, accent=True))
         rv.addWidget(sec_scene)
 
-        sec_sky = CollapsibleSection("Nắn theo skybox")
-        self.lbl_sky = QLabel("Chưa nắn. Chỉ cần 2–3 mặt skybox kề nhau là đủ\nđể bóp cả cảnh về đúng tỉ lệ.")
+        sec_sky = CollapsibleSection("Nắn theo mesh chuẩn")
+        self.lbl_sky = QLabel("Chưa nắn. Chọn 1 mesh hình đơn giản (skybox, tường, sàn)\n"
+                              "rồi bấm nút dưới — cảnh sẽ nắn khớp HÌNH GỐC của mesh đó\n"
+                              "(không ép thành lập phương), tự sửa cả lỗi FOV.")
         self.lbl_sky.setWordWrap(True)
         self.lbl_sky.setStyleSheet("color:#888")
         sec_sky.add(self.lbl_sky)
-        sec_sky.add(_btn("Dùng mesh đang chọn làm skybox", self.skybox_from_selection, accent=True,
-                         tip="Ctrl+click chọn các mặt skybox (2–3 mặt kề nhau là đủ) rồi bấm"))
-        self.cb_sky_align = QCheckBox("Xoay thẳng cảnh theo cạnh skybox (trục Y lên)")
+        sec_sky.add(_btn("Dùng mesh đang chọn làm chuẩn nắn", self.skybox_from_selection, accent=True,
+                         tip="Chọn 1 mesh hình hộp/phẳng đơn giản rồi bấm"))
+        self.cb_sky_align = QCheckBox("Xoay thẳng cảnh theo trục của mesh chuẩn")
         self.cb_sky_align.setChecked(True)
         self.cb_sky_align.toggled.connect(lambda *_: self._apply_sky(self.sky_names) if self.sky_names else None)
         sec_sky.add(self.cb_sky_align)
@@ -761,7 +763,7 @@ class MainWindow(QMainWindow):
         if not pick or not self._apply_sky(pick, quiet=True):
             QMessageBox.information(self, APP_NAME, "Không tự tìm được skybox.\n"
                                     "Ctrl+click chọn 2–3 mặt skybox trong viewport rồi bấm\n"
-                                    "\"Dùng mesh đang chọn làm skybox\".")
+                                    "\"Dùng mesh đang chọn làm chuẩn nắn\".")
 
     def skybox_from_selection(self):
         names = self.selected_names()
@@ -770,33 +772,37 @@ class MainWindow(QMainWindow):
             return
         self._apply_sky(names)
 
-    def _sky_parts(self, names):
-        fov, asp, fy = self._scene_params()
-        parts = []
-        for n in names:
-            g = NR.NRMesh(self.meta[n].path).view_geometry(fov, asp)
-            if g is None:
-                continue
-            pos, _, tri = g
-            if fy:
-                pos = pos.copy()
-                pos[:, 1] *= -1
-            parts.append((pos, tri))
-        return parts
-
     def _apply_sky(self, names, reload=True, quiet=False):
-        try:
-            M, info = NR.skybox_from_faces(self._sky_parts(names), align=self.cb_sky_align.isChecked())
-        except Exception as e:  # noqa
+        fov, asp, fy = self._scene_params()
+        S_all, O_all = [], []
+        for n in names:
+            m = NR.NRMesh(self.meta[n].path)
+            gv = m.view_geometry(fov, asp)
+            gl = m.local_geometry()
+            if gv is None or gl is None:
+                continue
+            ps = gv[0].copy()
+            if fy:
+                ps[:, 1] *= -1
+            po = gl[0]
+            k = min(len(ps), len(po))
+            if k < 8 or abs(len(ps) - len(po)) > max(len(ps), len(po)) * 0.5:
+                continue
+            S_all.append(ps[:k])
+            O_all.append(po[:k])
+        if not S_all:
             if not quiet:
-                QMessageBox.warning(self, APP_NAME, f"Không nắn được: {e}")
+                QMessageBox.warning(self, APP_NAME, "Mesh chọn không dùng để nắn được (số đỉnh không khớp).")
             return False
-        if info["resid"] > 0.05 and not quiet:
-            QMessageBox.warning(self, APP_NAME, "Các mặt chọn có vẻ không phải skybox vuông (sai số lớn).")
+        M, info = NR.reference_correction(np.vstack(S_all), np.vstack(O_all),
+                                          reorient=self.cb_sky_align.isChecked())
+        if info["resid"] > 0.08 and not quiet:
+            QMessageBox.warning(self, APP_NAME,
+                                "Mesh chọn không khớp tốt hình gốc (sai số lớn) – thử mesh phẳng/hộp đơn giản hơn.")
         self.sky_names, self.sky_M = list(names), M
         st = info["stretch"]
-        self.lbl_sky.setText(f"✓ Nắn theo {info['faces']} mặt: {', '.join(names)}\n"
-                             f"độ méo trước khi nắn: {st[0]:.3f} / {st[1]:.3f} / {st[2]:.3f}")
+        self.lbl_sky.setText(f"✓ Nắn theo hình gốc của: {', '.join(names)}\n"
+                             f"độ méo đã sửa: {st[0]:.3f} / {st[1]:.3f} / {st[2]:.3f}")
         self.lbl_sky.setStyleSheet("color:#7fd07f")
         if reload:
             if self.cmb_space.currentIndex() != 1 or not self._loaded_keys:

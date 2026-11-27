@@ -631,3 +631,30 @@ def split_faces_by_color(colors01, tri):
     uniq, inv = np.unique(fc, axis=0, return_inverse=True)
     palette = (uniq.astype(np.float32) / 255.0)
     return [tuple(c) for c in palette], inv.astype(np.int32).ravel()
+
+
+def reference_correction(scene_pos, obj_pos, reorient=True):
+    """
+    Nan canh sao cho mesh chuan khop dung HINH GOC (object space) cua chinh no,
+    thay vi ep thanh lap phuong. Tu sua ca loi FOV/ti le.
+    scene_pos, obj_pos: (N,3) cung so dinh, cung thu tu.
+    Tra ve (xform 3x3 de ap: pos @ xform.T, info).
+    """
+    S = np.asarray(scene_pos, np.float64)
+    O = np.asarray(obj_pos, np.float64)
+    n = min(len(S), len(O))
+    S, O = S[:n], O[:n]
+    Ps = S - S.mean(0)
+    Po = O - O.mean(0)
+    A, *_ = np.linalg.lstsq(Ps, Po, rcond=None)         # Ps @ A ~ Po  (A: 3x3)
+    resid = float(np.abs(Ps @ A - Po).max() / (np.abs(Po).max() + 1e-9))
+    U, sv, Vt = np.linalg.svd(A)
+    if reorient:
+        M = A                                           # un-distort + xoay thang theo truc goc
+    else:
+        R = U @ Vt
+        M = A @ R.T                                     # chi bo meo, giu huong camera
+    stretch = (sv / sv.max()).tolist() if sv.max() > 0 else [1, 1, 1]
+    info = {"resid": resid, "stretch": stretch,
+            "mirror": bool(np.linalg.det(A) < 0), "size": float(sv.mean())}
+    return M.T.astype(np.float64), info
