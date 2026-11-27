@@ -207,8 +207,8 @@ class NRMesh:
         return p if os.path.isfile(p) else None
 
     # ---------------------------------------------------------------- export
-    def local_geometry(self, uv_attr=None):
-        """(positions Nx3, uvs Nx2|None, indices Mx3) trong khong gian object."""
+    def local_geometry(self, uv_attr=None, with_color=False, color_label=None):
+        """(positions Nx3, uvs Nx2|None, indices Mx3[, colors Nx3]) trong khong gian object."""
         b = self.input
         pa = self.position_attr()
         if b is None or pa is None or b.indices is None:
@@ -224,19 +224,32 @@ class NRMesh:
         if uv_attr is not None:
             uvs = b.read_attr(uv_attr)
         idx = _clean_indices(b.indices, len(pos))
+        if with_color:
+            cols = mesh_vertex_colors(self, color_label)
+            if cols is not None:
+                cols = cols[:len(pos)]
+            return pos, uvs, idx, cols
         return pos, uvs, idx
 
-    def view_geometry(self, fov_deg=60.0, aspect=16 / 9, uv_attr_label=None, clip_fn=None):
+    def view_geometry(self, fov_deg=60.0, aspect=16 / 9, uv_attr_label=None, clip_fn=None,
+                      with_color=False, color_label=None):
         """Dung lai toa do camera tu SV_Position cua cac output (moi instance)."""
         outs = self.outputs
         if not outs:
             return None
         t = np.tan(np.radians(fov_deg) / 2.0)
-        P, I, U = [], [], []
+        P, I, U, C = [], [], [], []
         base = 0
         in_uv = None
         if uv_attr_label is not None and self.input is not None:
             in_uv = self.input.find(lambda a: a.label == uv_attr_label)
+        in_col = None
+        if with_color:
+            cands = _color_attrs(self.input)
+            if color_label:
+                in_col = next((x for x in cands if x.label == color_label), None)
+            if in_col is None and cands:
+                in_col = cands[0]
         for ob in outs:
             if ob.raw is None or ob.indices is None:
                 continue
@@ -258,10 +271,17 @@ class NRMesh:
             if in_uv is not None and ib is not None and ib.vcount and ob.vcount % ib.vcount == 0:
                 uv = np.tile(ib.read_attr(in_uv), (ob.vcount // ib.vcount, 1))
             U.append(uv if uv is not None else np.zeros((ob.vcount, 2), np.float32))
+            if with_color:
+                col = None
+                if in_col is not None and ib is not None and ib.vcount and ob.vcount % ib.vcount == 0:
+                    col = np.tile(ib.read_attr(in_col)[:, :3], (ob.vcount // ib.vcount, 1))
+                C.append(col if col is not None else np.ones((ob.vcount, 3), np.float32))
             I.append(_clean_indices(ob.indices, len(pos)) + base)
             base += len(pos)
         if not P:
             return None
+        if with_color:
+            return np.vstack(P), np.vstack(U), np.vstack(I), (np.vstack(C) if C else None)
         return np.vstack(P), np.vstack(U), np.vstack(I)
 
 
@@ -539,3 +559,60 @@ def skybox_score(mesh, fov, aspect, flip_y):
         return float(np.median(np.linalg.norm(pos, axis=1)))
     except Exception:  # noqa
         return 0.0
+
+
+# ----------------------------------------------------------------------------- vertex color
+def png_size(path):
+    """Doc (width, height) tu header PNG, khong can thu vien ngoai. None neu khong doc duoc."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(24)
+        if head[:8] != b"\x89PNG\r\n\x1a\n" or head[12:16] != b"IHDR":
+            return None
+        return struct.unpack(">II", head[16:24])
+    except Exception:  # noqa
+        return None
+
+
+def _color_attrs(buf):
+    """Cac thuoc tinh co the la vertex color: uint8-normalized, 3-4 kenh."""
+    if buf is None:
+        return []
+    return [a for a in buf.attrs if a.fmt == 3 and a.comps in (3, 4)]
+
+
+class _NRColorMixin:
+    pass
+
+
+def mesh_color_attrs(mesh):
+    return _color_attrs(mesh.input)
+
+
+def mesh_vertex_colors(mesh, attr_label=None):
+    """(N,3) float 0..1 hoac None. Mac dinh lay kenh color dau tien."""
+    b = mesh.input
+    cands = _color_attrs(b)
+    if not cands:
+        return None
+    a = None
+    if attr_label:
+        a = next((x for x in cands if x.label == attr_label), None)
+    if a is None:
+        a = cands[0]
+    col = b.read_attr(a)
+    return col[:, :3] if col is not None else None
+
+
+def split_faces_by_color(colors01, tri):
+    """
+    colors01: (N,3) 0..1. Tra ve (palette [(r,g,b)...], face_mat (M,) int) - mau y het (exact).
+    Mau moi tam giac = lam tron trung binh 3 dinh ve uint8.
+    """
+    q = np.clip(np.round(np.asarray(colors01)[:, :3] * 255.0), 0, 255).astype(np.int32)
+    tri = np.asarray(tri)
+    face = q[tri]                                   # (M,3,3)
+    fc = np.round(face.mean(axis=1)).astype(np.int32)   # (M,3)
+    uniq, inv = np.unique(fc, axis=0, return_inverse=True)
+    palette = (uniq.astype(np.float32) / 255.0)
+    return [tuple(c) for c in palette], inv.astype(np.int32).ravel()

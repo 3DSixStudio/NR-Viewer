@@ -211,7 +211,7 @@ class NumItem(QTreeWidgetItem):
 
 # --------------------------------------------------------------------------- loader thread
 class LoadWorker(QThread):
-    meshReady = Signal(int, str, object, object, object, object, object)
+    meshReady = Signal(int, str, object, object, object, object, object, object)
     progress = Signal(int, int, int)
     failed = Signal(int, str, str)
     duplicate = Signal(int, str, str)
@@ -240,10 +240,10 @@ class LoadWorker(QThread):
                 m = NR.NRMesh(path)
                 if self.scene:
                     cf = self.clip_fns.get(name)
-                    g = m.view_geometry(self.fov, self.aspect, uv_label, clip_fn=cf)
+                    g = m.view_geometry(self.fov, self.aspect, uv_label, clip_fn=cf, with_color=True)
                     if g is None:
                         continue
-                    pos, uv, tri = g
+                    pos, uv, tri, vcol = g
                     if self.flip_y and cf is None:
                         pos[:, 1] *= -1
                         tri = tri[:, ::-1].copy()
@@ -256,10 +256,10 @@ class LoadWorker(QThread):
                     uva = None
                     if uv_label and m.input is not None:
                         uva = m.input.find(lambda a: a.label == uv_label)
-                    g = m.local_geometry(uva)
+                    g = m.local_geometry(uva, with_color=True)
                     if g is None:
                         continue
-                    pos, uv, tri = g
+                    pos, uv, tri, vcol = g
                     off = (0, 0, 0)
                     if n > 1:  # nhieu mesh -> xep thanh hang ngang
                         mn, mx = pos.min(0), pos.max(0)
@@ -277,7 +277,7 @@ class LoadWorker(QThread):
                 if not np.isfinite(pos).all():
                     bad = ~np.isfinite(pos).all(1)
                     pos[bad] = 0
-                self.meshReady.emit(self.gen, name, pos, uv, tri, tex, np.asarray(off, np.float32))
+                self.meshReady.emit(self.gen, name, pos, uv, tri, tex, np.asarray(off, np.float32), vcol)
             except Exception as e:  # noqa
                 self.failed.emit(self.gen, name, str(e))
             self.progress.emit(self.gen, i + 1, n)
@@ -395,7 +395,7 @@ class MainWindow(QMainWindow):
         self.cmb_space.addItems(["Mesh gốc (object space)", "Cảnh dựng lại (camera game)"])
         self.cmb_space.currentIndexChanged.connect(self._on_space)
         self.cmb_shade = QComboBox()
-        self.cmb_shade.addItems(["Texture", "Clay", "Normal", "UV checker"])
+        self.cmb_shade.addItems(["Texture", "Clay", "Normal", "UV checker", "Vertex Color"])
         self.cmb_shade.currentIndexChanged.connect(self._on_display)
         self.cb_wire = QCheckBox("Wireframe")
         self.cb_wire.toggled.connect(self._on_display)
@@ -530,6 +530,11 @@ class MainWindow(QMainWindow):
         self.cb_embed.setToolTip("Tắt: texture chép ra thư mục <tên>_textures cạnh file FBX\n"
                                  "Bật: thêm cả ảnh vào trong FBX (file nặng hơn, mang đi 1 file là đủ)")
         sec_exp.add(self.cb_embed)
+        self.cb_bake_color = QCheckBox("Tách material theo vertex color (bake)")
+        self.cb_bake_color.setChecked(True)
+        self.cb_bake_color.setToolTip("Mesh không có texture thật mà có màu đỉnh (Color Attribute)\n"
+                                      "sẽ được tách thành từng material theo màu, để Maya nhận màu.")
+        sec_exp.add(self.cb_bake_color)
         sec_exp.add(_btn("Lưu ảnh viewport (PNG)", self.save_shot))
         rv.addWidget(sec_exp)
 
@@ -1173,10 +1178,10 @@ class MainWindow(QMainWindow):
         if gen == self.gen:
             self.dupes[name] = orig
 
-    def _on_mesh_ready(self, gen, name, pos, uv, tri, tex, off):
+    def _on_mesh_ready(self, gen, name, pos, uv, tri, tex, off, vcol=None):
         if gen != self.gen:
             return
-        self.view.add_mesh(name, pos, uv, tri, tex, off)
+        self.view.add_mesh(name, pos, uv, tri, tex, off, vcol)
         if name in self.trs:
             t, r, sc = self.trs[name]
             QTimer.singleShot(0, lambda n=name, t=t, r=r, sc=sc: self.view.set_transform(n, t, r, sc))
@@ -1238,18 +1243,37 @@ class MainWindow(QMainWindow):
             self.view.camera_origin(self.sp_fov.value())
 
     # ---------------------------------------------------------- export
-    def _write_fbx(self, path, items):
-        """items: list (ten, pos, uv, tri, tex)."""
+    def _is_real_texture(self, path):
+        """Texture that (co kich thuoc > 4px), khac voi o mau 1x1 cua part mau tron."""
+        if not path:
+            return False
+        sz = NR.png_size(path)
+        return sz is not None and (sz[0] > 4 or sz[1] > 4)
+
+    def _build_item(self, name, pos, uv, tri, col):
+        """Tao mesh dict: bake vertex color -> material neu khong co texture that."""
+        tex = self._tex_path(name)
+        if self.cb_bake_color.isChecked() and col is not None and not self._is_real_texture(tex):
+            pal, fm = NR.split_faces_by_color(col, tri)
+            return dict(name=name, pos=pos, uv=None, tri=tri, colors=pal, face_mat=fm), len(pal)
+        return dict(name=name, pos=pos, uv=uv, tri=tri, texture=tex), 0
+
+    def _write_fbx(self, path, items, big_color=None):
         try:
-            r = FBX.write_fbx(path, [dict(name=n, pos=p, uv=u, tri=t, texture=x) for n, p, u, t, x in items],
-                              embed_textures=self.cb_embed.isChecked(),
-                              copy_textures=True)
+            r = FBX.write_fbx(path, items, embed_textures=self.cb_embed.isChecked(), copy_textures=True)
         except Exception as e:  # noqa
             QMessageBox.warning(self, APP_NAME, f"Lỗi ghi FBX:\n{e}")
             return
         msg = f"Đã xuất {r['models']} mesh, {r['materials']} material, {r['textures']} texture → {path}"
         self.statusBar().showMessage(msg, 10000)
-        QMessageBox.information(self, APP_NAME, msg + (f"\n\nTexture đã chép vào:\n{r['tex_dir']}" if r["tex_dir"] else ""))
+        extra = ""
+        if r["tex_dir"]:
+            extra += f"\n\nTexture đã chép vào:\n{r['tex_dir']}"
+        if big_color:
+            lst = ", ".join(f"{n} ({c})" for n, c in big_color[:6])
+            extra += ("\n\n⚠ Một số mesh ra rất nhiều màu (có thể do game nướng sẵn đổ bóng vào "
+                      f"vertex color):\n{lst}\nNhững mesh này tạo nhiều material.")
+        QMessageBox.information(self, APP_NAME, msg + extra)
 
     def export_selected(self):
         names = [n for n in self.selected_names() if n not in self.dupes]
@@ -1260,18 +1284,24 @@ class MainWindow(QMainWindow):
         p, _ = QFileDialog.getSaveFileName(self, "Xuất FBX", os.path.join(self.folder, default + ".fbx"), "FBX (*.fbx)")
         if not p:
             return
-        items = []
+        items, big = [], []
         for n in names:
             try:
                 m = NR.NRMesh(self.meta[n].path)
                 uva = m.input.find(lambda a: a.label == self.choice[n][1]) if m.input else None
-                g = m.local_geometry(uva)
-                if g is not None:
-                    pos = GLV.apply_trs(g[0], *self.trs[n]) if n in self.trs else g[0]
-                    items.append((n, pos, g[1], g[2], self._tex_path(n)))
+                g = m.local_geometry(uva, with_color=True)
+                if g is None:
+                    continue
+                pos, uv, tri, col = g
+                if n in self.trs:
+                    pos = GLV.apply_trs(pos, *self.trs[n])
+                item, ncol = self._build_item(n, pos, uv, tri, col)
+                items.append(item)
+                if ncol > 200:
+                    big.append((n, ncol))
             except Exception as e:  # noqa
                 print(n, e)
-        self._write_fbx(p, items)
+        self._write_fbx(p, items, big)
 
     def export_scene(self):
         names = self._loaded_keys if self.cmb_space.currentIndex() == 1 else self.selected_names()
@@ -1282,16 +1312,16 @@ class MainWindow(QMainWindow):
         p, _ = QFileDialog.getSaveFileName(self, "Xuất FBX cảnh", os.path.join(self.folder, "scene.fbx"), "FBX (*.fbx)")
         if not p:
             return
-        items = []
+        items, big = [], []
         self.prog.setVisible(True)
         self.prog.setRange(0, len(names))
         for i, n in enumerate(names):
             try:
                 m = NR.NRMesh(self.meta[n].path)
-                g = m.view_geometry(self.sp_fov.value(), self.sp_aspect.value(), self.choice[n][1])
+                g = m.view_geometry(self.sp_fov.value(), self.sp_aspect.value(), self.choice[n][1], with_color=True)
                 if g is None:
                     continue
-                pos, uv, tri = g
+                pos, uv, tri, col = g
                 if self.cb_flipy.isChecked():
                     pos[:, 1] *= -1
                     tri = tri[:, ::-1]
@@ -1301,13 +1331,16 @@ class MainWindow(QMainWindow):
                         tri = tri[:, ::-1]
                 if n in self.trs:
                     pos = GLV.apply_trs(pos, *self.trs[n])
-                items.append((n, pos, uv, tri, self._tex_path(n)))
+                item, ncol = self._build_item(n, pos, uv, tri, col)
+                items.append(item)
+                if ncol > 200:
+                    big.append((n, ncol))
             except Exception as e:  # noqa
                 print(n, e)
             self.prog.setValue(i + 1)
             QApplication.processEvents()
         self.prog.setVisible(False)
-        self._write_fbx(p, items)
+        self._write_fbx(p, items, big)
 
     def save_shot(self):
         p, _ = QFileDialog.getSaveFileName(self, "Lưu ảnh", os.path.join(self.folder or "", "viewport.png"), "PNG (*.png)")

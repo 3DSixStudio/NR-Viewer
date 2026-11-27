@@ -21,15 +21,18 @@ MESH_VS = """
 #version 330 core
 layout(location=0) in vec3 aPos;
 layout(location=1) in vec2 aUV;
+layout(location=2) in vec3 aCol;
 uniform mat4 uModel;
 uniform mat4 uView;
 uniform mat4 uProj;
 out vec3 vViewPos;
 out vec2 vUV;
+out vec3 vCol;
 void main(){
     vec4 vp = uView * uModel * vec4(aPos,1.0);
     vViewPos = vp.xyz;
     vUV = aUV;
+    vCol = aCol;
     gl_Position = uProj * vp;
 }
 """
@@ -38,7 +41,8 @@ MESH_FS = """
 #version 330 core
 in vec3 vViewPos;
 in vec2 vUV;
-uniform int  uMode;        // 0 texture, 1 clay, 2 normal, 3 uv checker
+in vec3 vCol;
+uniform int  uMode;        // 0 texture, 1 clay, 2 normal, 3 uv checker, 4 vertex color
 uniform int  uHasTex;
 uniform sampler2D uTex;
 uniform float uAlphaCut;
@@ -65,6 +69,9 @@ void main(){
         vec2 c = floor(fract(vUV)*8.0);
         float k = mod(c.x+c.y,2.0);
         base = mix(vec3(0.9,0.45,0.15), vec3(0.95), k);
+    } else if(uMode==4){
+        base = vCol;
+        shade = 0.55 + 0.45*lam;
     }
     vec3 col = base*shade;
     if(uSel==1) col = mix(col, vec3(1.0,0.55,0.1), 0.5);
@@ -183,7 +190,7 @@ def apply_trs(pos, t, r_deg, s):
 
 # --------------------------------------------------------------------------- GPU mesh
 class GpuMesh:
-    def __init__(self, key, pos, uv, tri, tex_path, offset=(0, 0, 0)):
+    def __init__(self, key, pos, uv, tri, tex_path, offset=(0, 0, 0), vcol=None):
         self.key = key
         self.tex_path = tex_path
         self.count = int(tri.size)
@@ -197,7 +204,13 @@ class GpuMesh:
         self.visible = True
         if uv is None:
             uv = np.zeros((len(pos), 2), np.float32)
-        data = np.hstack([pos.astype(np.float32), uv.astype(np.float32)]).ravel()
+        if vcol is None:
+            vcol = np.ones((len(pos), 3), np.float32)
+        else:
+            vcol = np.asarray(vcol, np.float32)[:, :3]
+            if len(vcol) < len(pos):
+                vcol = np.vstack([vcol, np.ones((len(pos) - len(vcol), 3), np.float32)])
+        data = np.hstack([pos.astype(np.float32), uv.astype(np.float32), vcol[:len(pos)]]).ravel()
         self.vao = GL.glGenVertexArrays(1)
         self.vbo, self.ebo = GL.glGenBuffers(2)
         GL.glBindVertexArray(self.vao)
@@ -207,9 +220,11 @@ class GpuMesh:
         idx = np.ascontiguousarray(tri, dtype=np.uint32)
         GL.glBufferData(GL.GL_ELEMENT_ARRAY_BUFFER, idx.nbytes, idx, GL.GL_STATIC_DRAW)
         GL.glEnableVertexAttribArray(0)
-        GL.glVertexAttribPointer(0, 3, GL.GL_FLOAT, False, 20, ctypes.c_void_p(0))
+        GL.glVertexAttribPointer(0, 3, GL.GL_FLOAT, False, 32, ctypes.c_void_p(0))
         GL.glEnableVertexAttribArray(1)
-        GL.glVertexAttribPointer(1, 2, GL.GL_FLOAT, False, 20, ctypes.c_void_p(12))
+        GL.glVertexAttribPointer(1, 2, GL.GL_FLOAT, False, 32, ctypes.c_void_p(12))
+        GL.glEnableVertexAttribArray(2)
+        GL.glVertexAttribPointer(2, 3, GL.GL_FLOAT, False, 32, ctypes.c_void_p(20))
         GL.glBindVertexArray(0)
 
     def set_user_transform(self, t, r_deg, s):
@@ -290,10 +305,10 @@ class GLViewport(QOpenGLWidget):
         self._clear_req = True
         self.update()
 
-    def add_mesh(self, key, pos, uv, tri, tex_path, offset=(0, 0, 0)):
+    def add_mesh(self, key, pos, uv, tri, tex_path, offset=(0, 0, 0), vcol=None):
         if tri is None or len(tri) == 0:
             return
-        self._pending.append((key, pos, uv, tri, tex_path, np.asarray(offset, np.float32)))
+        self._pending.append((key, pos, uv, tri, tex_path, np.asarray(offset, np.float32), vcol))
         self.update()
 
     def set_transform(self, key, t, r_deg, s):
@@ -454,8 +469,8 @@ class GLViewport(QOpenGLWidget):
             self.meshes.clear()
             self._clear_req = False
         if self._pending:
-            for key, pos, uv, tri, tex, off in self._pending:
-                self.meshes.append(GpuMesh(key, pos, uv, tri, tex, off))
+            for key, pos, uv, tri, tex, off, vcol in self._pending:
+                self.meshes.append(GpuMesh(key, pos, uv, tri, tex, off, vcol))
             self._pending.clear()
             b = self.bounds()
             if b is not None:

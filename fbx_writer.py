@@ -137,8 +137,7 @@ def write_fbx(path, meshes, embed_textures=False, copy_textures=True, creator="N
     tex_dir = os.path.join(base_dir, tex_dir_name)
     nid = _Ids()
 
-    # ---- material / texture dung chung theo duong dan anh
-    mats = {}           # tex_path|None -> (mat_id, tex_id|None, vid_id|None, ten)
+    # ---- thu thap material: texture (theo duong dan anh) va mau (theo vertex color)
     tex_files = {}      # tex src -> (abs dst, rel)
     if copy_textures:
         for m in meshes:
@@ -149,17 +148,17 @@ def write_fbx(path, meshes, embed_textures=False, copy_textures=True, creator="N
                 if os.path.abspath(dst) != os.path.abspath(t):
                     shutil.copyfile(t, dst)
                 tex_files[t] = (dst, tex_dir_name + "/" + os.path.basename(t))
-    for m in meshes:
-        t = m.get("texture")
-        if t and not os.path.isfile(t):
-            t = None
-        if t not in mats:
-            nm = "M_" + (_safe(os.path.splitext(os.path.basename(t))[0]) if t else "NoTex")
-            mats[t] = (nid(), nid() if t else None, nid() if t else None, nm)
 
+    tex_mats = {}       # tex_path|None -> dict(mat, tex, vid, name)
+    col_mats = {}       # (r,g,b 0-255) -> mat_id
     objects = Node("Objects")
     conns = Node("Connections")
     n_geom = n_model = 0
+
+    def _use_color(m):
+        cols = m.get("colors")
+        fm = m.get("face_mat")
+        return cols is not None and fm is not None and len(cols) > 0
 
     for m in meshes:
         pos = np.asarray(m["pos"], np.float64)
@@ -169,12 +168,32 @@ def write_fbx(path, meshes, embed_textures=False, copy_textures=True, creator="N
         name = _safe(m["name"])
         gid, mid = nid(), nid()
 
+        # material cua mesh nay (theo thu tu local)
+        color_mode = _use_color(m)
+        if color_mode:
+            local_ids = []
+            for c in m["colors"]:
+                key = tuple(int(max(0, min(255, round(float(x) * 255)))) for x in c[:3])
+                if key not in col_mats:
+                    col_mats[key] = nid()
+                local_ids.append(col_mats[key])
+            face_mat = np.asarray(m["face_mat"], np.int32)
+        else:
+            t = m.get("texture")
+            if t and not os.path.isfile(t):
+                t = None
+            if t not in tex_mats:
+                nm = "M_" + (_safe(os.path.splitext(os.path.basename(t))[0]) if t else "NoTex")
+                tex_mats[t] = dict(mat=nid(), tex=nid() if t else None,
+                                   vid=nid() if t else None, name=nm, path=t)
+            local_ids = [tex_mats[t]["mat"]]
+
         g = objects.add("Geometry", gid, f"{name}\x00\x01Geometry", "Mesh")
         g.add("Properties70")
         g.add("GeometryVersion", 124)
         g.add("Vertices", pos.ravel().astype(np.float64))
         pvi = tri.astype(np.int32).copy()
-        pvi[:, 2] = -pvi[:, 2] - 1                      # dinh cuoi da giac: ~index
+        pvi[:, 2] = -pvi[:, 2] - 1
         g.add("PolygonVertexIndex", pvi.ravel())
 
         ln = g.add("LayerElementNormal", 0)
@@ -187,7 +206,7 @@ def write_fbx(path, meshes, embed_textures=False, copy_textures=True, creator="N
         uv = m.get("uv")
         if uv is not None:
             uv = np.asarray(uv, np.float64).copy()
-            uv[:, 1] = 1.0 - uv[:, 1]                  # D3D (v xuong) -> FBX (v len)
+            uv[:, 1] = 1.0 - uv[:, 1]
             lu = g.add("LayerElementUV", 0)
             lu.add("Version", 101)
             lu.add("Name", "UVMap")
@@ -199,9 +218,14 @@ def write_fbx(path, meshes, embed_textures=False, copy_textures=True, creator="N
         lm = g.add("LayerElementMaterial", 0)
         lm.add("Version", 101)
         lm.add("Name", "")
-        lm.add("MappingInformationType", "AllSame")
-        lm.add("ReferenceInformationType", "IndexToDirect")
-        lm.add("Materials", np.zeros(1, np.int32))
+        if color_mode and len(local_ids) > 1:
+            lm.add("MappingInformationType", "ByPolygon")
+            lm.add("ReferenceInformationType", "IndexToDirect")
+            lm.add("Materials", face_mat)
+        else:
+            lm.add("MappingInformationType", "AllSame")
+            lm.add("ReferenceInformationType", "IndexToDirect")
+            lm.add("Materials", np.zeros(1, np.int32))
 
         lay = g.add("Layer", 0)
         lay.add("Version", 100)
@@ -224,12 +248,15 @@ def write_fbx(path, meshes, embed_textures=False, copy_textures=True, creator="N
 
         conns.add("C", "OO", gid, mid)
         conns.add("C", "OO", mid, _Long(0))
-        conns.add("C", "OO", mats[m.get("texture") if m.get("texture") in mats else None][0], mid)
+        for mat_id in local_ids:                    # thu tu ket noi = chi so material local
+            conns.add("C", "OO", mat_id, mid)
         n_geom += 1
         n_model += 1
 
+    # ---- phat material texture
     n_tex = 0
-    for t, (mat_id, tex_id, vid_id, mname) in mats.items():
+    for t, info in tex_mats.items():
+        mat_id, mname = info["mat"], info["name"]
         ma = objects.add("Material", mat_id, f"{mname}\x00\x01Material", "")
         ma.add("Version", 102)
         ma.add("ShadingModel", "phong")
@@ -248,6 +275,7 @@ def write_fbx(path, meshes, embed_textures=False, copy_textures=True, creator="N
         else:
             absf, rel = t, _relpath(t, base_dir)
         tname = _safe(os.path.splitext(os.path.basename(t))[0])
+        tex_id, vid_id = info["tex"], info["vid"]
 
         vi = objects.add("Video", vid_id, f"{tname}\x00\x01Video", "Clip")
         vi.add("Type", "Clip")
@@ -274,10 +302,26 @@ def write_fbx(path, meshes, embed_textures=False, copy_textures=True, creator="N
         tx.add("ModelUVScaling", 1.0, 1.0)
         tx.add("Texture_Alpha_Source", "None")
         tx.add("Cropping", 0, 0, 0, 0)
-
         conns.add("C", "OP", tex_id, mat_id, "DiffuseColor")
         conns.add("C", "OO", vid_id, tex_id)
         n_tex += 1
+
+    # ---- phat material mau (tu vertex color)
+    for key, mat_id in col_mats.items():
+        r, gg, bb = (key[0] / 255.0, key[1] / 255.0, key[2] / 255.0)
+        mname = "C_%02X%02X%02X" % key
+        ma = objects.add("Material", mat_id, f"{mname}\x00\x01Material", "")
+        ma.add("Version", 102)
+        ma.add("ShadingModel", "phong")
+        ma.add("MultiLayer", 0)
+        p70 = ma.add("Properties70")
+        _P(p70, "DiffuseColor", "Color", "", "A", r, gg, bb)
+        _P(p70, "DiffuseFactor", "Number", "", "A", 1.0)
+        _P(p70, "SpecularFactor", "Number", "", "A", 0.0)
+        _P(p70, "Shininess", "double", "Number", "", 2.0)
+        _P(p70, "Diffuse", "Vector3D", "Vector", "", r, gg, bb)
+
+    n_mats = len(tex_mats) + len(col_mats)
 
     # ---- header / settings
     top = []
@@ -316,7 +360,7 @@ def write_fbx(path, meshes, embed_textures=False, copy_textures=True, creator="N
     defs = Node("Definitions")
     defs.add("Version", 100)
     counts = [("GlobalSettings", 1), ("Geometry", n_geom), ("Model", n_model),
-              ("Material", len(mats)), ("Texture", n_tex), ("Video", n_tex)]
+              ("Material", n_mats), ("Texture", n_tex), ("Video", n_tex)]
     defs.add("Count", sum(c for _, c in counts))
     for typ, c in counts:
         if c:
@@ -340,5 +384,5 @@ def write_fbx(path, meshes, embed_textures=False, copy_textures=True, creator="N
     out += b"\xf8\x5a\x8c\x6a\xde\xf5\xd9\x7e\xec\xe9\x0c\xe3\x75\x8f\x29\x0b"
     with open(path, "wb") as f:
         f.write(out)
-    return {"models": n_model, "materials": len(mats), "textures": n_tex,
+    return {"models": n_model, "materials": n_mats, "textures": n_tex,
             "tex_dir": tex_dir if tex_files else None}
