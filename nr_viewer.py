@@ -232,7 +232,7 @@ class LoadWorker(QThread):
     def run(self):
         n = len(self.jobs)
         cursor = 0.0
-        for i, (path, tex, uv_label) in enumerate(self.jobs):
+        for i, (path, tex, uv_label, color_label) in enumerate(self.jobs):
             if self._stop:
                 return
             name = os.path.splitext(os.path.basename(path))[0]
@@ -240,7 +240,7 @@ class LoadWorker(QThread):
                 m = NR.NRMesh(path)
                 if self.scene:
                     cf = self.clip_fns.get(name)
-                    g = m.view_geometry(self.fov, self.aspect, uv_label, clip_fn=cf, with_color=True)
+                    g = m.view_geometry(self.fov, self.aspect, uv_label, clip_fn=cf, with_color=True, color_label=color_label)
                     if g is None:
                         continue
                     pos, uv, tri, vcol = g
@@ -256,7 +256,7 @@ class LoadWorker(QThread):
                     uva = None
                     if uv_label and m.input is not None:
                         uva = m.input.find(lambda a: a.label == uv_label)
-                    g = m.local_geometry(uva, with_color=True)
+                    g = m.local_geometry(uva, with_color=True, color_label=color_label)
                     if g is None:
                         continue
                     pos, uv, tri, vcol = g
@@ -475,6 +475,10 @@ class MainWindow(QMainWindow):
         self.cmb_uv = QComboBox()
         self.cmb_uv.currentIndexChanged.connect(self._on_uv_choice)
         sec_tex.add(_row("Kênh UV:", self.cmb_uv))
+        self.cmb_vc = QComboBox()
+        self.cmb_vc.setToolTip("Kênh vertex color (giống Vertex Color Index của Blender)")
+        self.cmb_vc.currentIndexChanged.connect(self._on_vc_choice)
+        sec_tex.add(_row("Kênh màu:", self.cmb_vc))
         self.sp_alpha = QDoubleSpinBox(minimum=0, maximum=1, singleStep=0.05, value=0.1)
         self.sp_alpha.valueChanged.connect(self._on_display)
         sec_tex.add(_row("Alpha cutoff:", self.sp_alpha))
@@ -711,7 +715,7 @@ class MainWindow(QMainWindow):
                 QApplication.processEvents()
         self.prog.setVisible(False)
         for name, m in self.meta.items():
-            self.choice[name] = [self._default_tex(m), self._default_uv(m)]
+            self.choice[name] = [self._default_tex(m), self._default_uv(m), self._default_color(m)]
 
         info = self.ripinfo
         txt = os.path.normpath(d)
@@ -857,6 +861,10 @@ class MainWindow(QMainWindow):
         c = m.uv_candidates()
         pa = m.position_attr()
         c = [a for a in c if pa is None or a.label != pa.label]
+        return c[0].label if c else None
+
+    def _default_color(self, m):
+        c = NR.mesh_color_attrs(m)
         return c[0].label if c else None
 
     def _is_2d(self, m):
@@ -1049,7 +1057,7 @@ class MainWindow(QMainWindow):
         self.view.frame_all(names or None)
 
     def _update_panel(self, names):
-        for w in (self.cmb_tex, self.cmb_uv):
+        for w in (self.cmb_tex, self.cmb_uv, self.cmb_vc):
             w.blockSignals(True)
             w.clear()
         if len(names) != 1:
@@ -1057,7 +1065,7 @@ class MainWindow(QMainWindow):
             self.cmb_uv.setEnabled(False)
             self.lbl_thumb.clear()
             self.txt_info.setPlainText(f"{len(names)} mesh được chọn" if names else "")
-            for w in (self.cmb_tex, self.cmb_uv):
+            for w in (self.cmb_tex, self.cmb_uv, self.cmb_vc):
                 w.blockSignals(False)
             self.view.set_gizmo_target(None)      # gizmo chi hien khi chon dung 1 vat
             return
@@ -1075,7 +1083,15 @@ class MainWindow(QMainWindow):
         k = self.cmb_uv.findData(ch[1])
         if k >= 0:
             self.cmb_uv.setCurrentIndex(k)
-        for w in (self.cmb_tex, self.cmb_uv):
+        cattrs = NR.mesh_color_attrs(m)
+        if not cattrs:
+            self.cmb_vc.addItem("(không có)", None)
+        for a in cattrs:
+            self.cmb_vc.addItem(f"{a.label}  (uint8x{a.comps})", a.label)
+        kv = self.cmb_vc.findData(ch[2] if len(ch) > 2 else None)
+        if kv >= 0:
+            self.cmb_vc.setCurrentIndex(kv)
+        for w in (self.cmb_tex, self.cmb_uv, self.cmb_vc):
             w.blockSignals(False)
         self._show_thumb(m, ch[0])
         self.txt_info.setPlainText(self._info_text(m))
@@ -1123,6 +1139,15 @@ class MainWindow(QMainWindow):
         self._show_thumb(self.meta[names[0]], ti)
         self._sel_timer.start()
 
+    def _on_vc_choice(self, idx):
+        names = self.selected_names()
+        if len(names) != 1:
+            return
+        if len(self.choice[names[0]]) < 3:
+            self.choice[names[0]].append(None)
+        self.choice[names[0]][2] = self.cmb_vc.itemData(idx)
+        self._sel_timer.start()
+
     def _on_uv_choice(self, idx):
         names = self.selected_names()
         if len(names) != 1:
@@ -1158,7 +1183,8 @@ class MainWindow(QMainWindow):
         if not names:
             return
         scene = self.cmb_space.currentIndex() == 1
-        jobs = [(self.meta[n].path, self._tex_path(n), self.choice[n][1]) for n in names]
+        jobs = [(self.meta[n].path, self._tex_path(n), self.choice[n][1],
+                 self.choice[n][2] if len(self.choice[n]) > 2 else None) for n in names]
         if scene and self.sky_names:
             self._apply_sky(self.sky_names, reload=False)
         self.worker = LoadWorker(self.gen, jobs, scene, self.sp_fov.value(), self.sp_aspect.value(), self.cb_flipy.isChecked(),
@@ -1289,7 +1315,7 @@ class MainWindow(QMainWindow):
             try:
                 m = NR.NRMesh(self.meta[n].path)
                 uva = m.input.find(lambda a: a.label == self.choice[n][1]) if m.input else None
-                g = m.local_geometry(uva, with_color=True)
+                g = m.local_geometry(uva, with_color=True, color_label=(self.choice[n][2] if len(self.choice[n]) > 2 else None))
                 if g is None:
                     continue
                 pos, uv, tri, col = g
@@ -1318,7 +1344,8 @@ class MainWindow(QMainWindow):
         for i, n in enumerate(names):
             try:
                 m = NR.NRMesh(self.meta[n].path)
-                g = m.view_geometry(self.sp_fov.value(), self.sp_aspect.value(), self.choice[n][1], with_color=True)
+                g = m.view_geometry(self.sp_fov.value(), self.sp_aspect.value(), self.choice[n][1], with_color=True,
+                                    color_label=(self.choice[n][2] if len(self.choice[n]) > 2 else None))
                 if g is None:
                     continue
                 pos, uv, tri, col = g
