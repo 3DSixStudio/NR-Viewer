@@ -366,7 +366,7 @@ class MainWindow(QMainWindow):
         self.ed_search.textChanged.connect(self.apply_filter)
         lv.addWidget(self.ed_search)
         self.cb_hide2d = QCheckBox("Ẩn quad / UI 2D")
-        self.cb_hide2d.setChecked(True)
+        self.cb_hide2d.setChecked(False)   # mac dinh HIEN TAT CA mesh (giong Blender)
         self.cb_hide2d.toggled.connect(self.apply_filter)
         self.sp_mintri = QSpinBox(minimum=0, maximum=10_000_000, value=0)
         self.sp_mintri.valueChanged.connect(self.apply_filter)

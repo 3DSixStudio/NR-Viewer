@@ -25,15 +25,17 @@ import struct
 
 import numpy as np
 
+# Khop CHINH XAC enum VaType cua Ninja Ripper 2 (giong importer Blender):
+#   Float=0 Uint32=1 Uint16=2 Uint8=3 Sint32=4 Sint16=5 Sint8=6
+# (dt, so byte, co chuan hoa /max khi doc chung). Doc mau dung ham rieng ben duoi.
 ATTR_FMT = {
-    0: (np.float32, 4, False),
-    1: (np.int32, 4, False),
-    2: (np.uint32, 4, False),
-    3: (np.uint8, 1, True),
-    4: (np.uint16, 2, True),
-    5: (np.float16, 2, False),
-    6: (np.int16, 2, True),
-    7: (np.int8, 1, True),
+    0: (np.float32, 4, False),   # Float
+    1: (np.uint32,  4, False),   # Uint32
+    2: (np.uint16,  2, True),    # Uint16
+    3: (np.uint8,   1, True),    # Uint8
+    4: (np.int32,   4, False),   # Sint32
+    5: (np.int16,   2, True),    # Sint16
+    6: (np.int8,    1, True),    # Sint8
 }
 
 
@@ -571,10 +573,48 @@ def png_size(path):
 
 
 def _color_attrs(buf):
-    """Cac thuoc tinh co the la vertex color: uint8-normalized, 3-4 kenh."""
-    if buf is None:
+    """Danh sach kenh vertex color (vc_0, vc_1, ...) Y HET importer Blender
+    (nrtools.createVertexColorAttrsList):
+      = [cac attr co semantic 'color']
+      + [tat ca attr tu vi tri 1 tro di, bo qua vi tri 0 (position) va attr 'color' da them].
+    KHONG loc theo kieu du lieu — Blender liet ke moi attr, nen so vc khop het voi Blender."""
+    if buf is None or not buf.attrs:
         return []
-    return [a for a in buf.attrs if a.fmt == 3 and a.comps in (3, 4)]
+    attrs = buf.attrs
+    color_pos = [i for i, a in enumerate(attrs) if a.name.lower() == "color"]
+    order = list(color_pos)
+    for i in range(1, len(attrs)):
+        if i in color_pos:
+            continue
+        order.append(i)
+    return [attrs[i] for i in order]
+
+
+def _read_color_blender(buf, attr):
+    """Doc mau Y HET nrtools.unpackVertexColor:
+      - Float  : doc thang cac thanh phan (KHONG chuan hoa).
+      - Uint32 1 kenh : D3DCOLOR dong goi BGRA, chia 255.
+      - Con lai (uint8/uint16/int...) : tra ve den (0) — dung nhu Blender.
+    Tra ve (N,4) float."""
+    if buf is None or attr is None or buf.raw is None or buf.vcount == 0:
+        return None
+    n, stride = buf.vcount, buf.stride
+    arr = np.frombuffer(buf.raw, dtype=np.uint8).reshape(n, stride)
+    c = np.zeros((n, 4), np.float32)
+    if attr.fmt == 0:                                   # Float -> doc thang
+        block = arr[:, attr.offset:attr.offset + 4 * attr.comps].copy()
+        v = block.view(np.float32).reshape(n, attr.comps)
+        k = min(attr.comps, 4)
+        c[:, :k] = v[:, :k]
+    elif attr.fmt == 1 and attr.comps == 1:             # Uint32 D3DCOLOR (BGRA)
+        block = arr[:, attr.offset:attr.offset + 4].copy()
+        col = block.view(np.uint32).reshape(n).astype(np.uint32)
+        c[:, 0] = ((col >> 16) & 0xff) / 255.0           # R
+        c[:, 1] = ((col >> 8) & 0xff) / 255.0            # G
+        c[:, 2] = (col & 0xff) / 255.0                   # B
+        c[:, 3] = ((col >> 24) & 0xff) / 255.0           # A
+    # else: giu den — khop Blender (Uint8/Uint16 khong duoc unpack)
+    return c
 
 
 class _NRColorMixin:
@@ -590,7 +630,7 @@ def max_color_channels(meshes):
 
 
 def mesh_vertex_colors(mesh, color_index=None, attr_label=None):
-    """(N,3) float 0..1 hoac None. color_index = vc_N kieu Blender (clamp theo so kenh)."""
+    """(N,3) float 0..1 hoac None. color_index = vc_N kieu Blender."""
     b = mesh.input
     cands = _color_attrs(b)
     if not cands:
@@ -602,8 +642,10 @@ def mesh_vertex_colors(mesh, color_index=None, attr_label=None):
         a = cands[min(max(0, int(color_index)), len(cands) - 1)]
     if a is None:
         a = cands[0]
-    col = b.read_attr(a)
-    return col[:, :3] if col is not None else None
+    c = _read_color_blender(b, a)
+    if c is None:
+        return None
+    return np.clip(c[:, :3], 0.0, 1.0)
 
 
 def _pick_color_attr(buf, color_index=None, color_label=None):
