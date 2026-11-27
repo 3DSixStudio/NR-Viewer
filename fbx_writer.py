@@ -168,11 +168,17 @@ def write_fbx(path, meshes, embed_textures=False, copy_textures=True, creator="N
             continue
         name = _safe(m["name"])
         # ten phai duy nhat (tranh Maya gop node trung ten); trung thi them hau to
-        if name in used_names:
-            used_names[name] += 1
-            name = f"{name}_{used_names[name]}"
+        # kieu Blender (ten, ten.001...) nhung Maya cam dau cham -> ten_001, ten_002
+        base = name
+        if base in used_names:
+            used_names[base] += 1
+            name = f"{base}_{used_names[base]:03d}"
+            while name in used_names:                 # dam bao khong dung voi ten co san
+                used_names[base] += 1
+                name = f"{base}_{used_names[base]:03d}"
         else:
-            used_names[name] = 0
+            used_names[base] = 0
+        used_names[name] = 0                          # danh dau ten cuoi cung da dung
         gid, mid = nid(), nid()
 
         # material cua mesh nay (theo thu tu local)

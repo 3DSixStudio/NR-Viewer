@@ -92,7 +92,7 @@ def _cstr(b, p):
 
 
 class NRMesh:
-    def __init__(self, path, header_only=False):
+    def __init__(self, path, header_only=False, draw_sel=None):
         self.path = path
         self.name = os.path.splitext(os.path.basename(path))[0]
         self.textures = []        # [(slot, filename)]
@@ -100,7 +100,45 @@ class NRMesh:
         self.buffers = {}         # id -> NRBuffer
         self.draw_index = -1
         self.instances = 1
+        self._geoms = []          # [(cid, stage, draw_id, inst)]
+        self.draw_sel = draw_sel  # None/0 = draw dau; k = chon draw thu k trong file
         self._parse(header_only)
+        self._build_draws()
+
+    def _build_draws(self):
+        """Mot file .nr co the chua NHIEU draw (nhieu GEOM). Moi draw = 1 mesh
+        hien thi: ghep GEOM PreVs (stage=1) voi GEOM Vs (stage=2) cung drawId.
+        self.draws = [(prevs_cid, vs_cid)], theo thu tu xuat hien."""
+        by_draw = {}
+        order = []
+        for cid, stage, did, inst in self._geoms:
+            if did not in by_draw:
+                by_draw[did] = {"pre": None, "vs": None}
+                order.append(did)
+            if stage == 1:
+                by_draw[did]["pre"] = cid
+            elif stage == 2:
+                by_draw[did]["vs"] = cid
+        draws = []
+        for did in order:
+            d = by_draw[did]
+            if d["pre"] is not None:
+                draws.append((d["pre"], d["vs"]))
+        if not draws:
+            # Khong doc duoc GEOM -> giu hanh vi cu: buffer 0 = PreVs, 1 = Vs
+            vs = 1 if 1 in self.buffers else None
+            draws = [(0 if 0 in self.buffers else min(self.buffers, default=0), vs)]
+        self.draws = draws
+        self.active = 0 if self.draw_sel is None else max(0, min(self.draw_sel, len(draws) - 1))
+        pre = draws[self.active][0]
+        for cid, stage, did, inst in self._geoms:
+            if cid == pre:
+                self.draw_index, self.instances = did, inst
+                break
+
+    @property
+    def num_draws(self):
+        return len(self.draws)
 
     # ------------------------------------------------------------------ parse
     def _parse(self, header_only):
@@ -161,22 +199,41 @@ class NRMesh:
                 buf.raw = b[8:8 + cnt * stride]
         elif tag == "GEOM":
             flags, nref, draw, inst = struct.unpack_from("<4I", b, 0)
-            self.draw_index, self.instances = draw, max(1, inst)
+            stage = (flags & 0x1C) >> 2               # PreVs=1, Vs=2, DsGs=3
+            self._geoms.append((cid, stage, draw, max(1, inst)))
+            if self.draw_index < 0:
+                self.draw_index, self.instances = draw, max(1, inst)
 
     # --------------------------------------------------------------- helpers
     @property
+    def _active_draw(self):
+        if not self.draws:
+            return (0, 1 if 1 in self.buffers else None)
+        return self.draws[self.active]
+
+    @property
     def input(self):
-        return self.buffers.get(0)
+        """Buffer PreVs cua draw dang chon (vi tri object-space)."""
+        pre, _vs = self._active_draw
+        return self.buffers.get(pre)
 
     @property
     def outputs(self):
+        """Buffer Vs (PostVs) cua rieng draw dang chon - de dung canh tu SV_Position."""
+        _pre, vs = self._active_draw
+        if vs is not None and vs in self.buffers:
+            return [self.buffers[vs]]
         return [self.buffers[k] for k in sorted(self.buffers) if k > 0]
 
     @property
     def color_buffer(self):
-        """Buffer chua MAU per-vertex. Voi Roblox/ANGLE, mau nam o buffer PostVs
-        (Vs stage) chu KHONG phai PreVs (input). Chon buffer output co cung so
-        dinh voi input (map 1:1 theo chi so dinh). Khong co thi dung input."""
+        """Buffer chua MAU per-vertex = PostVs (Vs stage) cua draw dang chon,
+        KHONG phai PreVs. Map 1:1 theo chi so dinh voi input."""
+        _pre, vs = self._active_draw
+        if vs is not None and vs in self.buffers:
+            ob = self.buffers[vs]
+            if ob.attrs and ob.vcount:
+                return ob
         ib = self.input
         base = ib.vcount if ib else 0
         for ob in self.outputs:

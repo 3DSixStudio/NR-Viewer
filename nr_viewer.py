@@ -233,12 +233,11 @@ class LoadWorker(QThread):
     def run(self):
         n = len(self.jobs)
         cursor = 0.0
-        for i, (path, tex, uv_label) in enumerate(self.jobs):
+        for i, (path, tex, uv_label, dsel, name) in enumerate(self.jobs):
             if self._stop:
                 return
-            name = os.path.splitext(os.path.basename(path))[0]
             try:
-                m = NR.NRMesh(path)
+                m = NR.NRMesh(path, draw_sel=dsel)
                 if self.scene:
                     cf = self.clip_fns.get(name)
                     g = m.view_geometry(self.fov, self.aspect, uv_label, clip_fn=cf, with_color=True, color_index=self.vc_index)
@@ -711,9 +710,20 @@ class MainWindow(QMainWindow):
         self.prog.setRange(0, len(files))
         for i, f in enumerate(files):
             try:
-                m = NR.NRMesh(os.path.join(d, f), header_only=True)
-                self.meta[m.name] = m
-                self.tex_freq.update(t for _, t in m.textures)
+                m0 = NR.NRMesh(os.path.join(d, f), header_only=True)
+                self.tex_freq.update(t for _, t in m0.textures)
+                # 1 file co the chua nhieu draw -> moi draw 1 mesh, ten kieu Blender
+                for k in range(m0.num_draws):
+                    m = m0 if k == 0 else NR.NRMesh(os.path.join(d, f), header_only=True, draw_sel=k)
+                    m.draw_sel = k
+                    nm = m0.name if k == 0 else f"{m0.name}.{k:03d}"
+                    while nm in self.meta:              # trung ten giua cac file -> .001.. nhu Blender
+                        k2 = 1
+                        while f"{m0.name}.{k2:03d}" in self.meta:
+                            k2 += 1
+                        nm = f"{m0.name}.{k2:03d}"
+                    m.name = nm
+                    self.meta[nm] = m
             except Exception as e:  # noqa
                 print("Loi doc", f, e)
             if i % 50 == 0:
@@ -752,7 +762,7 @@ class MainWindow(QMainWindow):
         try:
             for m in cands:
                 try:
-                    sc = NR.skybox_score(NR.NRMesh(m.path), fov, asp, fy)
+                    sc = NR.skybox_score(NR.NRMesh(m.path, draw_sel=m.draw_sel), fov, asp, fy)
                 except Exception:  # noqa
                     continue
                 if sc > 0:
@@ -779,7 +789,7 @@ class MainWindow(QMainWindow):
         rot_only = self.cb_sky_align.isChecked()
         S_all, O_all, normals = [], [], []
         for n in names:
-            m = NR.NRMesh(self.meta[n].path)
+            m = NR.NRMesh(self.meta[n].path, draw_sel=self.meta[n].draw_sel)
             gv = m.view_geometry(fov, asp)
             gl = m.local_geometry()
             if gv is None or gl is None:
@@ -846,7 +856,7 @@ class MainWindow(QMainWindow):
             full = []
             for m in cands[:80]:
                 try:
-                    full.append(NR.NRMesh(m.path))
+                    full.append(NR.NRMesh(m.path, draw_sel=m.draw_sel))
                 except Exception:  # noqa
                     pass
             r = NR.calibrate_projection(full)
@@ -897,7 +907,9 @@ class MainWindow(QMainWindow):
         for name, m in self.meta.items():
             it = NumItem()
             vals = [name, m.draw_index, m.vert_count(), m.tri_count(), m.instances, len(m.textures)]
-            sort = [int(name.split("_")[-1]) if name.split("_")[-1].isdigit() else 0] + vals[1:]
+            _t = name.split("_")[-1].split(".")
+            _k = (int(_t[0]) if _t[0].isdigit() else 0) + (int(_t[1]) / 1000.0 if len(_t) > 1 and _t[1].isdigit() else 0)
+            sort = [_k] + vals[1:]
             for c, (v, s) in enumerate(zip(vals, sort)):
                 it.setText(c, f"{v:,}" if isinstance(v, int) and c else str(v))
                 it.setData(c, Qt.UserRole, s)
@@ -1210,7 +1222,7 @@ class MainWindow(QMainWindow):
         self.dupes = {}
         if not names:
             return
-        jobs = [(self.meta[n].path, self._tex_path(n), self.choice[n][1]) for n in names]
+        jobs = [(self.meta[n].path, self._tex_path(n), self.choice[n][1], self.meta[n].draw_sel, n) for n in names]
         if scene and self.sky_names:
             self._apply_sky(self.sky_names, reload=False)
         self.worker = LoadWorker(self.gen, jobs, scene, self.sp_fov.value(), self.sp_aspect.value(), self.cb_flipy.isChecked(),
@@ -1340,7 +1352,7 @@ class MainWindow(QMainWindow):
         items, big = [], []
         for n in names:
             try:
-                m = NR.NRMesh(self.meta[n].path)
+                m = NR.NRMesh(self.meta[n].path, draw_sel=self.meta[n].draw_sel)
                 uva = m.input.find(lambda a: a.label == self.choice[n][1]) if m.input else None
                 g = m.local_geometry(uva, with_color=True, color_index=self.vc_index)
                 if g is None:
@@ -1370,7 +1382,7 @@ class MainWindow(QMainWindow):
         self.prog.setRange(0, len(names))
         for i, n in enumerate(names):
             try:
-                m = NR.NRMesh(self.meta[n].path)
+                m = NR.NRMesh(self.meta[n].path, draw_sel=self.meta[n].draw_sel)
                 g = m.view_geometry(self.sp_fov.value(), self.sp_aspect.value(), self.choice[n][1], with_color=True,
                                     color_index=self.vc_index)
                 if g is None:
