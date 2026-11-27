@@ -329,7 +329,7 @@ class MainWindow(QMainWindow):
         self.tex_freq = Counter()
         self.ripinfo = {}
         self.gen = 0
-        self.vc_index = 1          # kenh vertex color chung (giong vc_N cua Blender)
+        self.vc_index = -1         # -1 = Auto: tu do kenh mau that tung mesh (giong Blender)
         self.worker = None
         self._old_workers = []
         self._upd_worker = None
@@ -776,7 +776,8 @@ class MainWindow(QMainWindow):
 
     def _apply_sky(self, names, reload=True, quiet=False):
         fov, asp, fy = self._scene_params()
-        S_all, O_all = [], []
+        rot_only = self.cb_sky_align.isChecked()
+        S_all, O_all, normals = [], [], []
         for n in names:
             m = NR.NRMesh(self.meta[n].path)
             gv = m.view_geometry(fov, asp)
@@ -786,25 +787,35 @@ class MainWindow(QMainWindow):
             ps = gv[0].copy()
             if fy:
                 ps[:, 1] *= -1
+            nrm = NR.face_normal_scene(ps, gv[2])      # phap tuyen mat trong canh
+            if nrm is not None:
+                normals.append(nrm)
             po = gl[0]
             k = min(len(ps), len(po))
             if k < 8 or abs(len(ps) - len(po)) > max(len(ps), len(po)) * 0.5:
                 continue
             S_all.append(ps[:k])
             O_all.append(po[:k])
-        if not S_all:
-            if not quiet:
-                QMessageBox.warning(self, APP_NAME, "Mesh chọn không dùng để nắn được (số đỉnh không khớp).")
-            return False
-        rot_only = self.cb_sky_align.isChecked()
-        M, info = NR.reference_correction(np.vstack(S_all), np.vstack(O_all), rotate_only=rot_only)
-        self.sky_names, self.sky_M = list(names), M
-        st = info["stretch"]
-        if rot_only:
-            note = "chỉ xoay thẳng" + (f" (cảnh đang méo {st[1]:.2f}/{st[2]:.2f} — bỏ tích nếu muốn bóp lại)"
-                                       if min(st) < 0.9 else " — tỉ lệ đã chuẩn")
+
+        # "Chỉ xoay thẳng" = xoay cho PHÁP TUYẾN các mặt đã chọn vuông góc trục
+        # (không phụ thuộc object-space, không méo). Cần >=2 mặt không song song.
+        M = None
+        if rot_only and len(normals) >= 2:
+            M = NR.axis_align_rotation(normals)
+        if M is None:
+            if not S_all:
+                if not quiet:
+                    QMessageBox.warning(self, APP_NAME,
+                                        "Mesh chọn không nắn được. Hãy chọn 2–3 mặt phẳng "
+                                        "(tường/sàn/trần skybox) vuông góc nhau.")
+                return False
+            _M, info = NR.reference_correction(np.vstack(S_all), np.vstack(O_all), rotate_only=rot_only)
+            M = _M
+            note = ("chỉ xoay thẳng (dự phòng)" if rot_only
+                    else f"xoay + sửa méo: {info['stretch'][0]:.3f}/{info['stretch'][1]:.3f}/{info['stretch'][2]:.3f}")
         else:
-            note = f"xoay + sửa méo: {st[0]:.3f}/{st[1]:.3f}/{st[2]:.3f}"
+            note = f"xoay thẳng theo {len(normals)} mặt (vuông góc trục)"
+        self.sky_names, self.sky_M = list(names), M
         self.lbl_sky.setText(f"✓ Nắn theo {', '.join(names)}\n{note}")
         self.lbl_sky.setStyleSheet("color:#7fd07f")
         if reload:
@@ -1145,12 +1156,13 @@ class MainWindow(QMainWindow):
         self.cmb_vc.blockSignals(True)
         self.cmb_vc.clear()
         nmax = NR.max_color_channels(list(self.meta.values()))
-        if nmax == 0:
-            self.cmb_vc.addItem("(không có)", 0)
+        # "Auto" = tu do kenh mau that tung mesh (giong Base Color cua Blender):
+        # moi mesh cat mau o so vc khac nhau, nen chon tay 1 so khong dung duoc het.
+        self.cmb_vc.addItem("Auto (giống Blender)", -1)
         for i in range(nmax):
             self.cmb_vc.addItem(f"vc_{i}", i)
-        self.vc_index = min(self.vc_index, max(0, nmax - 1))
-        self.cmb_vc.setCurrentIndex(self.vc_index if nmax else 0)
+        pos = self.cmb_vc.findData(self.vc_index)
+        self.cmb_vc.setCurrentIndex(pos if pos >= 0 else 0)
         self.cmb_vc.blockSignals(False)
 
     def _on_vc_choice(self, idx):

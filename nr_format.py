@@ -247,7 +247,11 @@ class NRMesh:
             in_uv = self.input.find(lambda a: a.label == uv_attr_label)
         in_col = None
         if with_color:
-            in_col = _pick_color_attr(self.input, color_index, color_label)
+            ci = color_index
+            if ci == -1:                              # Auto: dò kenh mau that/mesh
+                bi = best_color_index(self)
+                ci = bi if bi >= 0 else None
+            in_col = _pick_color_attr(self.input, ci, color_label)
         for ob in outs:
             if ob.raw is None or ob.indices is None:
                 continue
@@ -631,12 +635,48 @@ def max_color_channels(meshes):
     return max((len(_color_attrs(m.input)) for m in meshes), default=0)
 
 
+def best_color_index(mesh):
+    """Tu dong chon kenh vc la MAU THAT giong Blender Base Color:
+      - Chi nhan attr Float 3-4 thanh phan, gia tri trong [0,1] (bo normal uint8,
+        bo UV float2 gia tri >1, bo cac kenh unpack ra den).
+      - Uu tien kenh CO BIEN THIEN (mau that) hon kenh hang so (vd tint trang).
+    Tra ve chi so vc (0..N-1); -1 neu mesh khong co kenh mau nao (chi co texture)."""
+    b = mesh.input
+    cands = _color_attrs(b)
+    if not cands:
+        return -1
+    best_var, best_const = None, None
+    for i, a in enumerate(cands):
+        if a.fmt != 0 or a.comps not in (3, 4):      # chi mau float 3-4 kenh
+            continue
+        c = _read_color_blender(b, a)
+        if c is None:
+            continue
+        rgb = c[:, :3]
+        if rgb.max() > 1.001 or rgb.min() < -0.001:  # UV / du lieu khac, khong phai mau
+            continue
+        varies = len(np.unique(np.round(rgb, 3), axis=0)) > 1
+        if varies and best_var is None:
+            best_var = i
+        elif not varies and best_const is None:
+            best_const = i
+    if best_var is not None:
+        return best_var
+    if best_const is not None:
+        return best_const
+    return -1
+
+
 def mesh_vertex_colors(mesh, color_index=None, attr_label=None):
-    """(N,3) float 0..1 hoac None. color_index = vc_N kieu Blender."""
+    """(N,3) float 0..1 hoac None. color_index = vc_N kieu Blender.
+    color_index = -1 (Auto): tu chon kenh mau that giong Blender."""
     b = mesh.input
     cands = _color_attrs(b)
     if not cands:
         return None
+    if color_index == -1:                            # Auto: dò kenh mau that
+        bi = best_color_index(mesh)
+        color_index = bi if bi >= 0 else None
     a = None
     if attr_label:
         a = next((x for x in cands if x.label == attr_label), None)
@@ -700,3 +740,54 @@ def reference_correction(scene_pos, obj_pos, rotate_only=True):
     info = {"resid": resid, "stretch": stretch,
             "mirror": bool(np.linalg.det(R) < 0), "size": float(sv.mean())}
     return M.T.astype(np.float64), info
+
+
+def face_normal_scene(pos, tri):
+    """Phap tuyen chu dao cua 1 mat (trong khong gian canh) = tong phap tuyen
+    tam giac co trong so dien tich. Tra ve vector don vi (3,) hoac None."""
+    pos = np.asarray(pos, np.float64)
+    tri = np.asarray(tri)
+    if len(tri) == 0:
+        return None
+    v0, v1, v2 = pos[tri[:, 0]], pos[tri[:, 1]], pos[tri[:, 2]]
+    n = np.cross(v1 - v0, v2 - v0)          # do dai = 2*dien tich
+    # Dinh huong nhat quan: lat cac phap tuyen nguoc ve cung ban cau truoc khi cong
+    ref = n[np.argmax((n * n).sum(1))]
+    s = np.sign((n * ref).sum(1))
+    s[s == 0] = 1
+    tot = (n * s[:, None]).sum(0)
+    L = np.linalg.norm(tot)
+    return (tot / L) if L > 1e-9 else None
+
+
+def axis_align_rotation(normals):
+    """Tu 2-3 phap tuyen mat skybox (khong gian canh) -> ma tran xoay 3x3 R
+    sao cho cac mat VUONG GOC voi truc X/Y/Z. Chi xoay (truc giao, det=+1),
+    KHONG keo gian. Ap dung: pos @ R.T. Chon hoan vi/dau truc gan huong hien
+    tai nhat de khong lat lung tung."""
+    import itertools
+    N = [np.asarray(n, np.float64) for n in normals if n is not None]
+    N = [n / np.linalg.norm(n) for n in N if np.linalg.norm(n) > 1e-9]
+    if len(N) < 2:
+        return None
+    e1 = N[0]
+    e2 = N[1] - np.dot(N[1], e1) * e1
+    if np.linalg.norm(e2) < 1e-6:
+        return None                         # 2 mat gan song song -> khong du thong tin
+    e2 /= np.linalg.norm(e2)
+    e3 = np.cross(e1, e2)
+    F = np.array([e1, e2, e3])              # he truc rieng cua skybox (trong canh), det=+1
+    axes = np.eye(3)
+    best, bestR = -1e9, None
+    for perm in itertools.permutations(range(3)):
+        for sgn in itertools.product((1, -1), repeat=3):
+            T = np.array([axes[perm[0]] * sgn[0],
+                          axes[perm[1]] * sgn[1],
+                          axes[perm[2]] * sgn[2]])
+            R = T.T @ F                      # R @ e_i = cot cua T -> mat thang truc
+            if np.linalg.det(R) < 0:         # chi nhan xoay thuan (khong lat guong)
+                continue
+            tr = np.trace(R)                 # gan identity nhat = it phai xoay nhat
+            if tr > best:
+                best, bestR = tr, R
+    return bestR

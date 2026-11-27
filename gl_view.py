@@ -63,6 +63,10 @@ void main(){
         if(t.a < uAlphaCut) discard;
         base = t.rgb; a = 1.0;
         shade = 0.55 + 0.45*lam;
+    } else if(uMode==0){
+        // Khong co texture -> dung mau vertex (Base Color) nhu Blender
+        base = vCol;
+        shade = 0.6 + 0.4*lam;
     } else if(uMode==2){
         frag = vec4(n*0.5+0.5,1.0); return;
     } else if(uMode==3){
