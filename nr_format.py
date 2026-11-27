@@ -633,10 +633,11 @@ def split_faces_by_color(colors01, tri):
     return [tuple(c) for c in palette], inv.astype(np.int32).ravel()
 
 
-def reference_correction(scene_pos, obj_pos, reorient=True):
+def reference_correction(scene_pos, obj_pos, rotate_only=True):
     """
-    Nan canh sao cho mesh chuan khop dung HINH GOC (object space) cua chinh no,
-    thay vi ep thanh lap phuong. Tu sua ca loi FOV/ti le.
+    Nan canh theo mesh chuan:
+      rotate_only=True  -> CHI XOAY thang theo truc cua mesh goc (KHONG keo gian)
+      rotate_only=False -> xoay + sua ca meo/ti le (khi FOV sai)
     scene_pos, obj_pos: (N,3) cung so dinh, cung thu tu.
     Tra ve (xform 3x3 de ap: pos @ xform.T, info).
     """
@@ -646,15 +647,12 @@ def reference_correction(scene_pos, obj_pos, reorient=True):
     S, O = S[:n], O[:n]
     Ps = S - S.mean(0)
     Po = O - O.mean(0)
-    A, *_ = np.linalg.lstsq(Ps, Po, rcond=None)         # Ps @ A ~ Po  (A: 3x3)
-    resid = float(np.abs(Ps @ A - Po).max() / (np.abs(Po).max() + 1e-9))
+    A, *_ = np.linalg.lstsq(Ps, Po, rcond=None)         # Ps @ A ~ Po
     U, sv, Vt = np.linalg.svd(A)
-    if reorient:
-        M = A                                           # un-distort + xoay thang theo truc goc
-    else:
-        R = U @ Vt
-        M = A @ R.T                                     # chi bo meo, giu huong camera
-    stretch = (sv / sv.max()).tolist() if sv.max() > 0 else [1, 1, 1]
+    R = U @ Vt                                          # phan xoay (co the gom lat guong)
+    M = R if rotate_only else A
+    resid = float(np.abs(Ps @ M - Po).max() / (np.abs(Po).max() + 1e-9))
+    stretch = (sv / sv.max()).tolist() if sv.max() > 0 else [1.0, 1.0, 1.0]
     info = {"resid": resid, "stretch": stretch,
-            "mirror": bool(np.linalg.det(A) < 0), "size": float(sv.mean())}
+            "mirror": bool(np.linalg.det(R) < 0), "size": float(sv.mean())}
     return M.T.astype(np.float64), info

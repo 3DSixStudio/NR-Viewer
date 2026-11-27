@@ -523,8 +523,10 @@ class MainWindow(QMainWindow):
         sec_sky.add(self.lbl_sky)
         sec_sky.add(_btn("Dùng mesh đang chọn làm chuẩn nắn", self.skybox_from_selection, accent=True,
                          tip="Chọn 1 mesh hình hộp/phẳng đơn giản rồi bấm"))
-        self.cb_sky_align = QCheckBox("Xoay thẳng cảnh theo trục của mesh chuẩn")
+        self.cb_sky_align = QCheckBox("Chỉ xoay thẳng, không kéo giãn")
         self.cb_sky_align.setChecked(True)
+        self.cb_sky_align.setToolTip("BẬT (mặc định): chỉ xoay cảnh cho thẳng trục theo mesh chuẩn.\n"
+                                     "TẮT: xoay + bóp lại tỉ lệ (dùng khi FOV dò sai làm cảnh méo).")
         self.cb_sky_align.toggled.connect(lambda *_: self._apply_sky(self.sky_names) if self.sky_names else None)
         sec_sky.add(self.cb_sky_align)
         sec_sky.add(_btn("Bỏ nắn", self.clear_skybox))
@@ -794,15 +796,16 @@ class MainWindow(QMainWindow):
             if not quiet:
                 QMessageBox.warning(self, APP_NAME, "Mesh chọn không dùng để nắn được (số đỉnh không khớp).")
             return False
-        M, info = NR.reference_correction(np.vstack(S_all), np.vstack(O_all),
-                                          reorient=self.cb_sky_align.isChecked())
-        if info["resid"] > 0.08 and not quiet:
-            QMessageBox.warning(self, APP_NAME,
-                                "Mesh chọn không khớp tốt hình gốc (sai số lớn) – thử mesh phẳng/hộp đơn giản hơn.")
+        rot_only = self.cb_sky_align.isChecked()
+        M, info = NR.reference_correction(np.vstack(S_all), np.vstack(O_all), rotate_only=rot_only)
         self.sky_names, self.sky_M = list(names), M
         st = info["stretch"]
-        self.lbl_sky.setText(f"✓ Nắn theo hình gốc của: {', '.join(names)}\n"
-                             f"độ méo đã sửa: {st[0]:.3f} / {st[1]:.3f} / {st[2]:.3f}")
+        if rot_only:
+            note = "chỉ xoay thẳng" + (f" (cảnh đang méo {st[1]:.2f}/{st[2]:.2f} — bỏ tích nếu muốn bóp lại)"
+                                       if min(st) < 0.9 else " — tỉ lệ đã chuẩn")
+        else:
+            note = f"xoay + sửa méo: {st[0]:.3f}/{st[1]:.3f}/{st[2]:.3f}"
+        self.lbl_sky.setText(f"✓ Nắn theo {', '.join(names)}\n{note}")
         self.lbl_sky.setStyleSheet("color:#7fd07f")
         if reload:
             if self.cmb_space.currentIndex() != 1 or not self._loaded_keys:
