@@ -172,6 +172,18 @@ class NRMesh:
     def outputs(self):
         return [self.buffers[k] for k in sorted(self.buffers) if k > 0]
 
+    @property
+    def color_buffer(self):
+        """Buffer chua MAU per-vertex. Voi Roblox/ANGLE, mau nam o buffer PostVs
+        (Vs stage) chu KHONG phai PreVs (input). Chon buffer output co cung so
+        dinh voi input (map 1:1 theo chi so dinh). Khong co thi dung input."""
+        ib = self.input
+        base = ib.vcount if ib else 0
+        for ob in self.outputs:
+            if ob.attrs and ob.vcount and (base == 0 or ob.vcount == base):
+                return ob
+        return ib
+
     def vert_count(self):
         b = self.input
         return b.vcount if b else 0
@@ -245,13 +257,20 @@ class NRMesh:
         in_uv = None
         if uv_attr_label is not None and self.input is not None:
             in_uv = self.input.find(lambda a: a.label == uv_attr_label)
-        in_col = None
+        # Mau doc tu buffer PostVs (color_buffer) - noi chua mau that, map 1:1
+        # theo chi so dinh voi output dang dung de dung canh.
+        full_col = None
         if with_color:
+            cb = self.color_buffer
             ci = color_index
             if ci == -1:                              # Auto: dò kenh mau that/mesh
                 bi = best_color_index(self)
                 ci = bi if bi >= 0 else None
-            in_col = _pick_color_attr(self.input, ci, color_label)
+            col_attr = _pick_color_attr(cb, ci, color_label)
+            if col_attr is not None:
+                fc = _read_color_blender(cb, col_attr)
+                if fc is not None:
+                    full_col = np.clip(fc[:, :3], 0.0, 1.0)
         for ob in outs:
             if ob.raw is None or ob.indices is None:
                 continue
@@ -275,10 +294,11 @@ class NRMesh:
             U.append(uv if uv is not None else np.zeros((ob.vcount, 2), np.float32))
             if with_color:
                 col = None
-                if in_col is not None and ib is not None and ib.vcount and ob.vcount % ib.vcount == 0:
-                    base_col = _read_color_blender(ib, in_col)
-                    if base_col is not None:
-                        col = np.tile(np.clip(base_col[:, :3], 0.0, 1.0), (ob.vcount // ib.vcount, 1))
+                if full_col is not None:
+                    if len(full_col) == ob.vcount:            # PostVs = color_buffer, map 1:1
+                        col = full_col
+                    elif ob.vcount % len(full_col) == 0:      # instance lap lai
+                        col = np.tile(full_col, (ob.vcount // len(full_col), 1))
                 C.append(col if col is not None else np.ones((ob.vcount, 3), np.float32))
             I.append(_clean_indices(ob.indices, len(pos)) + base)
             base += len(pos)
@@ -628,11 +648,11 @@ class _NRColorMixin:
 
 
 def mesh_color_attrs(mesh):
-    return _color_attrs(mesh.input)
+    return _color_attrs(mesh.color_buffer)
 
 
 def max_color_channels(meshes):
-    return max((len(_color_attrs(m.input)) for m in meshes), default=0)
+    return max((len(_color_attrs(m.color_buffer)) for m in meshes), default=0)
 
 
 def best_color_index(mesh):
@@ -641,7 +661,7 @@ def best_color_index(mesh):
         bo UV float2 gia tri >1, bo cac kenh unpack ra den).
       - Uu tien kenh CO BIEN THIEN (mau that) hon kenh hang so (vd tint trang).
     Tra ve chi so vc (0..N-1); -1 neu mesh khong co kenh mau nao (chi co texture)."""
-    b = mesh.input
+    b = mesh.color_buffer
     cands = _color_attrs(b)
     if not cands:
         return -1
@@ -669,8 +689,9 @@ def best_color_index(mesh):
 
 def mesh_vertex_colors(mesh, color_index=None, attr_label=None):
     """(N,3) float 0..1 hoac None. color_index = vc_N kieu Blender.
-    color_index = -1 (Auto): tu chon kenh mau that giong Blender."""
-    b = mesh.input
+    color_index = -1 (Auto): tu chon kenh mau that giong Blender.
+    Doc tu buffer PostVs (color_buffer) - noi chua mau that."""
+    b = mesh.color_buffer
     cands = _color_attrs(b)
     if not cands:
         return None
