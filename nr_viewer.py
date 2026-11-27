@@ -539,10 +539,12 @@ class MainWindow(QMainWindow):
         self.cb_embed.setToolTip("Tắt: texture chép ra thư mục <tên>_textures cạnh file FBX\n"
                                  "Bật: thêm cả ảnh vào trong FBX (file nặng hơn, mang đi 1 file là đủ)")
         sec_exp.add(self.cb_embed)
-        self.cb_bake_color = QCheckBox("Tách material theo vertex color (bake)")
+        self.cb_bake_color = QCheckBox("Bake vertex color → material màu")
         self.cb_bake_color.setChecked(True)
-        self.cb_bake_color.setToolTip("Mesh không có texture thật mà có màu đỉnh (Color Attribute)\n"
-                                      "sẽ được tách thành từng material theo màu, để Maya nhận màu.")
+        self.cb_bake_color.setToolTip("Đang xem chế độ \"Vertex Color\": MỌI mesh có màu đều được bake\n"
+                                      "thành material màu (không xuất texture) — y như đang thấy.\n"
+                                      "Đang xem \"Texture\": mesh có texture thật giữ texture,\n"
+                                      "mesh không có texture thì bake màu. Maya không đọc vertex color nên cần bake.")
         sec_exp.add(self.cb_bake_color)
         sec_exp.add(_btn("Lưu ảnh viewport (PNG)", self.save_shot))
         rv.addWidget(sec_exp)
@@ -1318,7 +1320,12 @@ class MainWindow(QMainWindow):
     def _build_item(self, name, pos, uv, tri, col):
         """Tao mesh dict: bake vertex color -> material neu khong co texture that."""
         tex = self._tex_path(name)
-        if self.cb_bake_color.isChecked() and col is not None and not self._is_real_texture(tex):
+        vc_view = self.cmb_shade.currentIndex() == 4          # dang xem "Vertex Color"
+        bake = col is not None and self.cb_bake_color.isChecked() and (
+            vc_view or not self._is_real_texture(tex))
+        # Xem Vertex Color -> LUON nuong mau thanh material (bo texture), y nhu dang thay.
+        # Xem Texture -> mesh co texture that giu texture, khong co thi nuong mau.
+        if bake:
             pal, fm = NR.split_faces_by_color(col, tri)
             return dict(name=name, pos=pos, uv=None, tri=tri, colors=pal, face_mat=fm), len(pal)
         return dict(name=name, pos=pos, uv=uv, tri=tri, texture=tex), 0
