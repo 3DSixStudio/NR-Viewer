@@ -160,12 +160,19 @@ def write_fbx(path, meshes, embed_textures=False, copy_textures=True, creator="N
         fm = m.get("face_mat")
         return cols is not None and fm is not None and len(cols) > 0
 
+    used_names = {}
     for m in meshes:
         pos = np.asarray(m["pos"], np.float64)
         tri = np.asarray(m["tri"], np.int64)
         if len(tri) == 0 or len(pos) == 0:
             continue
         name = _safe(m["name"])
+        # ten phai duy nhat (tranh Maya gop node trung ten); trung thi them hau to
+        if name in used_names:
+            used_names[name] += 1
+            name = f"{name}_{used_names[name]}"
+        else:
+            used_names[name] = 0
         gid, mid = nid(), nid()
 
         # material cua mesh nay (theo thu tu local)

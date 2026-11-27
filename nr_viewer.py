@@ -505,9 +505,9 @@ class MainWindow(QMainWindow):
         sec_scene.add(_row("FOV:", self.sp_fov, "Tỉ lệ:", self.sp_aspect))
         sec_scene.add(self.cb_flipy)
         self.cb_dedupe = QCheckBox("Bỏ mesh vẽ trùng (chống nhiễu lấm tấm)")
-        self.cb_dedupe.setChecked(True)
-        self.cb_dedupe.setToolTip("Game vẽ cùng 1 hình nhiều lần (depth pass, shadow...).\n"
-                                  "Các bản trùng chồng khít lên nhau gây nhiễu z-fighting.")
+        self.cb_dedupe.setChecked(False)
+        self.cb_dedupe.setToolTip("TẮT (mặc định): giữ TẤT CẢ mesh, không bỏ bản nào.\n"
+                                  "BẬT: bỏ bớt các bản vẽ trùng khít (depth pass, shadow) để hết nhiễu z-fighting.")
         self.cb_dedupe.toggled.connect(lambda *_: self._reload_view(self._loaded_keys, False)
                                        if self.cmb_space.currentIndex() else None)
         sec_scene.add(self.cb_dedupe)
