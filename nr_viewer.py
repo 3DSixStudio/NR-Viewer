@@ -901,7 +901,8 @@ class MainWindow(QMainWindow):
 
     def apply_filter(self):
         q = self.ed_search.text().strip().lower()
-        hide2d = self.cb_hide2d.isChecked()
+        # Chế độ dựng cảnh LUÔN ẩn 2D; chế độ Mesh gốc theo ô tích (mặc định hiện hết).
+        hide2d = self.cb_hide2d.isChecked() or self.cmb_space.currentIndex() == 1
         mintri = self.sp_mintri.value()
         shown = 0
         for i in range(self.tree.topLevelItemCount()):
@@ -1187,11 +1188,16 @@ class MainWindow(QMainWindow):
             old.finished.connect(lambda o=old: self._old_workers.remove(o) if o in self._old_workers else None)
         self.gen += 1
         self.view.clear()
+        scene = self.cmb_space.currentIndex() == 1
+        if scene:
+            # Cảnh dựng lại: LUÔN bỏ quad UI / mesh 2D (không dựng được vào
+            # không gian camera -> nếu để vào sẽ thành tam giác khổng lồ, loạn).
+            # "Hiện tất cả mesh" chỉ áp cho chế độ Mesh gốc (object space).
+            names = [n for n in names if not self._is_2d(self.meta[n])]
         self._loaded_keys = list(names)
         self.dupes = {}
         if not names:
             return
-        scene = self.cmb_space.currentIndex() == 1
         jobs = [(self.meta[n].path, self._tex_path(n), self.choice[n][1]) for n in names]
         if scene and self.sky_names:
             self._apply_sky(self.sky_names, reload=False)
@@ -1256,6 +1262,7 @@ class MainWindow(QMainWindow):
     # ---------------------------------------------------------- display
     def _on_space(self, idx):
         self.cb_grid.setChecked(idx == 0)
+        self.apply_filter()   # cap nhat danh sach (scene -> an 2D, object -> hien het)
         self._reload_view(self._loaded_keys or self.selected_names())
 
     def _on_display(self, *_):

@@ -272,7 +272,9 @@ class NRMesh:
             if with_color:
                 col = None
                 if in_col is not None and ib is not None and ib.vcount and ob.vcount % ib.vcount == 0:
-                    col = np.tile(ib.read_attr(in_col)[:, :3], (ob.vcount // ib.vcount, 1))
+                    base_col = _read_color_blender(ib, in_col)
+                    if base_col is not None:
+                        col = np.tile(np.clip(base_col[:, :3], 0.0, 1.0), (ob.vcount // ib.vcount, 1))
                 C.append(col if col is not None else np.ones((ob.vcount, 3), np.float32))
             I.append(_clean_indices(ob.indices, len(pos)) + base)
             base += len(pos)
