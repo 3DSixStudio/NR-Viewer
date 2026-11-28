@@ -546,6 +546,14 @@ class MainWindow(QMainWindow):
                                       "Đang xem \"Texture\": mesh có texture thật giữ texture,\n"
                                       "mesh không có texture thì bake màu. Maya không đọc vertex color nên cần bake.")
         sec_exp.add(self.cb_bake_color)
+        self.cb_flip_faces = QCheckBox("Tự sửa mặt ngược (Reverse + Set to Face)")
+        self.cb_flip_faces.setChecked(True)
+        self.cb_flip_faces.setToolTip("Tự làm sẵn 2 lệnh Maya trước khi xuất FBX:\n"
+                                      "• Reverse: đảo chiều mesh nào bị ngược (cảnh dựng lại luôn ngược;\n"
+                                      "  mesh gốc thì tự kiểm tra từng mesh)\n"
+                                      "• Set to Face: normal phẳng theo từng mặt\n"
+                                      "Import vào Maya là đúng mặt luôn, không cần sửa tay.")
+        sec_exp.add(self.cb_flip_faces)
         sec_exp.add(_btn("Lưu ảnh viewport (PNG)", self.save_shot))
         rv.addWidget(sec_exp)
 
@@ -1368,6 +1376,7 @@ class MainWindow(QMainWindow):
                 if n in self.trs:
                     pos = GLV.apply_trs(pos, *self.trs[n])
                 item, ncol = self._build_item(n, pos, uv, tri, col)
+                item["flip"] = self.cb_flip_faces.isChecked() and NR.object_faces_inverted(m)
                 items.append(item)
                 if ncol > 200:
                     big.append((n, ncol))
@@ -1405,6 +1414,7 @@ class MainWindow(QMainWindow):
                 if n in self.trs:
                     pos = GLV.apply_trs(pos, *self.trs[n])
                 item, ncol = self._build_item(n, pos, uv, tri, col)
+                item["flip"] = self.cb_flip_faces.isChecked()   # canh dung lai luon nguoc mat
                 items.append(item)
                 if ncol > 200:
                     big.append((n, ncol))

@@ -131,6 +131,8 @@ def _safe(name):
 
 # ----------------------------------------------------------------------------- main
 def write_fbx(path, meshes, embed_textures=False, copy_textures=True, creator="NR Viewer"):
+    """Moi mesh co the co m["flip"]=True: dao chieu mat (= Maya Reverse).
+    Normal luon ghi phang theo tung mat (= Maya Normals > Set to Face)."""
     path = os.path.abspath(path)
     base_dir = os.path.dirname(path)
     tex_dir_name = os.path.splitext(os.path.basename(path))[0] + "_textures"
@@ -166,6 +168,9 @@ def write_fbx(path, meshes, embed_textures=False, copy_textures=True, creator="N
         tri = np.asarray(m["tri"], np.int64)
         if len(tri) == 0 or len(pos) == 0:
             continue
+        if m.get("flip"):
+            tri = tri[:, ::-1].copy()      # Reverse: dao thu tu dinh -> mat quay ra ngoai
+        # Normal ghi ben duoi = _flat_normals(tri da dao) -> y het "Set to Face"
         name = _safe(m["name"])
         # ten phai duy nhat (tranh Maya gop node trung ten); trung thi them hau to
         # kieu Blender (ten, ten.001...) nhung Maya cam dau cham -> ten_001, ten_002

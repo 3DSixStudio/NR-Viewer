@@ -961,3 +961,27 @@ def axis_align_rotation(normals):
             if tr > best:
                 best, bestR = tr, R
     return bestR
+
+
+def object_faces_inverted(mesh):
+    """Mesh object-space (PreVs) co bi nguoc mat khong?
+    Canh dung lai tu SV_Position luon nguoc mat (dong nhat moi mesh, do quy uoc
+    cull cua GPU). Khop affine object -> canh cho chinh mesh nay: det > 0 nghia la
+    object cung chieu voi canh -> cung bi nguoc -> can Reverse. det < 0 -> dang dung."""
+    try:
+        if mesh.input is None:
+            return True                         # mesh chi co Vs: toa do lay tu canh -> nguoc
+        gl = mesh.local_geometry()
+        gv = mesh.view_geometry(60.0, 16 / 9)
+        if gl is None or gv is None:
+            return False
+        po, pv = np.asarray(gl[0], np.float64), np.asarray(gv[0], np.float64)
+        k = min(len(po), len(pv))
+        if k < 4:
+            return False
+        X = np.hstack([po[:k], np.ones((k, 1))])
+        A, *_ = np.linalg.lstsq(X, pv[:k], rcond=None)
+        d = np.linalg.det(A[:3, :3])
+        return bool(d > 0) if abs(d) > 1e-12 else False
+    except Exception:
+        return False
