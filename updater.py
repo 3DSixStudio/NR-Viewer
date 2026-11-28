@@ -147,11 +147,22 @@ def apply_update_and_restart(new_file):
         "  goto retry\r\n"
         ")\r\n"
         f'powershell -NoProfile -Command "try{{Unblock-File -LiteralPath \'{exe}\'}}catch{{}}" >nul 2>&1\r\n'
+        # Xoa bien moi truong PyInstaller ke thua tu app cu, neu khong ban moi se
+        # tim python3xx.dll trong thu muc _MEI cua ban cu (da bi xoa) -> loi DLL.
+        "set _MEIPASS2=\r\n"
+        "set _PYI_APPLICATION_HOME_DIR=\r\n"
+        "set _PYI_ARCHIVE_FILE=\r\n"
+        "set _PYI_PARENT_PROCESS_LEVEL=\r\n"
+        "set _PYI_SPLASH_IPC=\r\n"
+        "set PYINSTALLER_RESET_ENVIRONMENT=1\r\n"
         f'start "" "{exe}"\r\n'
         'del "%~f0"\r\n'
     )
     with open(bat, "w", encoding="utf-8") as f:
         f.write(content)
     flags = 0x08000000 | 0x00000008  # CREATE_NO_WINDOW | DETACHED_PROCESS
-    subprocess.Popen(["cmd", "/c", bat], creationflags=flags, close_fds=True)
+    env = {k: v for k, v in os.environ.items()
+           if not (k.startswith("_PYI_") or k.startswith("_MEI"))}
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"   # ban moi khoi dong nhu chay tay
+    subprocess.Popen(["cmd", "/c", bat], creationflags=flags, close_fds=True, env=env)
     return True
